@@ -11,5 +11,6 @@ public class Query
     //     new Todo { Id = 3, Title = "Finish homework", Completed = false }
     // };
 
-    public IEnumerable<Todo> GetTodos() => TodoStore.Todos;
+    // public IEnumerable<Todo> GetTodos() => TodoStore.Todos;
+    public IQueryable<Todo> GetTodos([Service] TodoDbContext context) => context.Todos;
 }

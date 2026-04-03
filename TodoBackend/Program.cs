@@ -1,3 +1,5 @@
+using Microsoft.EntityFrameworkCore;
+using TodoBackend.Data;
 using TodoBackend.GraphQL;
 var builder = WebApplication.CreateBuilder(args);
 
@@ -10,7 +12,12 @@ builder.Services.AddCors(options =>
               .AllowAnyHeader());
 });
 
-// Add Hotchocolate GraphQL Server
+// 2. Add MongoDB EF Core Context
+var mongoClient = new MongoDB.Driver.MongoClient("mongodb://localhost:27017");
+builder.Services.AddDbContext<TodoDbContext>(options =>
+    options.UseMongoDB(mongoClient, "TodoDatabase"));
+
+// 3. Add Hotchocolate GraphQL Server
 builder.Services
     .AddGraphQLServer()
     .AddQueryType<Query>()
