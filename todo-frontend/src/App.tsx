@@ -14,8 +14,8 @@ interface GetTodosData {
 }
 
 const GET_TODOS = gql`
-  query GetTodos {
-    todos {
+  query GetTodos($isCompleted: Boolean) {
+    todos(isCompleted: $isCompleted) {
       id
       title
       completed
@@ -51,23 +51,30 @@ const DELETE_TODO = gql`
 
 
 
+type FilterType = 'all' | 'active' | 'completed';
+
 function App() {
   // const [title, setTitle] = React.useState('');
     const [title, setTitle] = useState('');
-  const { loading, error, data } = useQuery<GetTodosData>(GET_TODOS);
+  const [filter, setFilter] = useState<FilterType>('all');
+
+  const isCompleted = filter === 'all' ? undefined : filter === 'completed';
+  const { loading, error, data } = useQuery<GetTodosData>(GET_TODOS, {
+    variables: { isCompleted },
+  });
 
   // Setup the mutation hook, refetch the todos after adding a new one
   const [addToDo] = useMutation(ADD_TODO, {
-    refetchQueries: [{ query: GET_TODOS }],
+    refetchQueries: [{ query: GET_TODOS, variables: { isCompleted } }],
   });
 
   // 2 Setup the toggle mutation hook, also refetch the todos after toggling
   const [toggleToDo] = useMutation(TOGGLE_TODO, {
-    refetchQueries: [{ query: GET_TODOS }],
+    refetchQueries: [{ query: GET_TODOS, variables: { isCompleted } }],
   });
 
   const [deleteTodo] = useMutation(DELETE_TODO, {
-    refetchQueries: [{ query: GET_TODOS }],
+    refetchQueries: [{ query: GET_TODOS, variables: { isCompleted } }],
   });
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -107,6 +114,26 @@ function App() {
         />
         <button type="submit">Add</button>
       </form>
+      <div style={{ marginBottom: '1rem' }}>
+        {(['all', 'active', 'completed'] as FilterType[]).map((filterOption) => (
+          <button
+            key={filterOption}
+            onClick={() => setFilter(filterOption)}
+            style={{
+              marginRight: '0.5rem',
+              padding: '0.4rem 0.8rem',
+              fontWeight: filter === filterOption ? 'bold' : 'normal',
+              background: 'none',
+              border: 'none',
+              borderBottom: filter === filterOption ? '2px solid #646cff' : '2px solid transparent',
+              cursor: 'pointer',
+              textTransform: 'capitalize',
+            }}
+          >
+            {filterOption}
+          </button>
+        ))}
+      </div>
       <ul style={{ listStyle: 'none', padding: 0 }}>
         {data.todos.map((todo: Todo) => (
           // 4. Add an onClick handler to toggle the todo when clicked and add pointer cursor style

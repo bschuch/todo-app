@@ -12,5 +12,13 @@ public class Query
     // };
 
     // public IEnumerable<Todo> GetTodos() => TodoStore.Todos;
-    public IQueryable<Todo> GetTodos([Service] TodoDbContext context) => context.Todos;
+    public IQueryable<Todo> GetTodos([Service] TodoDbContext context, bool? isCompleted = null)
+    {
+        var query = context.Todos.AsQueryable();
+        if (isCompleted.HasValue)
+        {
+            query = query.Where(t => t.IsCompleted == isCompleted.Value);
+        }
+        return query;
+    }
 }
