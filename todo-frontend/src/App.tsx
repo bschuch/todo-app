@@ -63,18 +63,30 @@ function App() {
     variables: { isCompleted },
   });
 
+  // All three cached query variants so mutations keep every tab up to date
+  const allQueryVariants = [
+    { query: GET_TODOS, variables: { isCompleted: undefined } },
+    { query: GET_TODOS, variables: { isCompleted: false } },
+    { query: GET_TODOS, variables: { isCompleted: true } },
+  ];
+
   // Setup the mutation hook, refetch the todos after adding a new one
+  // New todos are always incomplete, so only "all" and "active" tabs are affected
   const [addToDo] = useMutation(ADD_TODO, {
-    refetchQueries: [{ query: GET_TODOS, variables: { isCompleted } }],
+    refetchQueries: [
+      { query: GET_TODOS, variables: { isCompleted: undefined } },
+      { query: GET_TODOS, variables: { isCompleted: false } },
+    ],
   });
 
   // 2 Setup the toggle mutation hook, also refetch the todos after toggling
+  // Toggle moves a todo between active/completed, so all three tabs must be refreshed
   const [toggleToDo] = useMutation(TOGGLE_TODO, {
-    refetchQueries: [{ query: GET_TODOS, variables: { isCompleted } }],
+    refetchQueries: allQueryVariants,
   });
 
   const [deleteTodo] = useMutation(DELETE_TODO, {
-    refetchQueries: [{ query: GET_TODOS, variables: { isCompleted } }],
+    refetchQueries: allQueryVariants,
   });
 
   const handleSubmit = (e: React.FormEvent) => {
