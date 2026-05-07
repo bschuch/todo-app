@@ -43,6 +43,19 @@ public class Query
         return query.OrderBy(task => task.Status).ThenBy(task => task.SortOrder);
     }
 
+    public IQueryable<Todo> GetScheduledTasks(
+        [Service] TodoDbContext context,
+        string familyId,
+        DateTime rangeStart,
+        DateTime rangeEnd) =>
+        context.Todos
+            .Where(task =>
+                task.FamilyId == familyId &&
+                task.DueAt != null &&
+                task.DueAt >= rangeStart &&
+                task.DueAt < rangeEnd)
+            .OrderBy(task => task.DueAt);
+
     public IQueryable<Todo> GetTodos([Service] TodoDbContext context) =>
         context.Todos.OrderBy(task => task.Status).ThenBy(task => task.SortOrder);
 }

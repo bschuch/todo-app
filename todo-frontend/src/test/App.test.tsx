@@ -2,7 +2,7 @@ import { MockedProvider } from '@apollo/client/testing/react'
 import type { MockedResponse } from '@apollo/client/testing'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import App, { CREATE_CALENDAR_EVENT, GET_CALENDAR_EVENTS, GET_FAMILIES, GET_FAMILY_MEMBERS, GET_TASKS } from '../App'
+import App, { CREATE_CALENDAR_EVENT, CREATE_TASK, GET_CALENDAR_EVENTS, GET_FAMILIES, GET_FAMILY_MEMBERS, GET_SCHEDULED_TASKS, GET_TASKS } from '../App'
 
 const family = { id: 'family-1', name: 'Smith Family', boardId: 'family-home' }
 const otherFamily = { id: 'family-2', name: 'Garcia Family', boardId: 'garcia-family' }
@@ -10,11 +10,15 @@ const emma = { id: 'member-1', familyId: 'family-1', name: 'Emma', color: '#6dbe
 
 const task = {
   id: 'task-1',
+  familyId: 'family-1',
   title: 'Clean room',
   assigneeName: 'Emma',
   status: 'TODO' as const,
   completed: false,
   sortOrder: 0,
+  dueAt: null,
+  durationMinutes: null,
+  recurrenceRule: 'None',
   updatedAt: '2026-04-09T15:30:00.000Z',
 }
 
@@ -76,6 +80,13 @@ function baseMocks({ eventError = false } = {}): MockedResponse[] {
       },
       result: { data: { tasks: [task] } },
     },
+    {
+      request: {
+        query: GET_SCHEDULED_TASKS,
+        variables: { familyId: family.id, rangeStart: weekRange.start, rangeEnd: weekRange.end },
+      },
+      result: { data: { scheduledTasks: [] } },
+    },
   ]
 }
 
@@ -104,6 +115,7 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: 'Week' })).toHaveClass('active')
     expect(await screen.findByText('Grocery Run')).toBeInTheDocument()
     expect(screen.getByText('Clean room')).toBeInTheDocument()
+    expect(screen.getByText(/sat/i)).toBeInTheDocument()
   })
 
   it('switches to month view', async () => {
@@ -117,6 +129,13 @@ describe('App', () => {
           variables: { familyId: family.id, rangeStart: monthRange.start, rangeEnd: monthRange.end },
         },
         result: { data: { calendarEvents: [calendarEvent] } },
+      },
+      {
+        request: {
+          query: GET_SCHEDULED_TASKS,
+          variables: { familyId: family.id, rangeStart: monthRange.start, rangeEnd: monthRange.end },
+        },
+        result: { data: { scheduledTasks: [] } },
       },
     ])
 
@@ -174,6 +193,128 @@ describe('App', () => {
     expect(await screen.findByText('Piano Lesson')).toBeInTheDocument()
   })
 
+  it('shows a newly-created event after switching to month view', async () => {
+    const user = userEvent.setup()
+    const weekRange = currentRange('week')
+    const monthRange = currentRange('month')
+    const newEvent = {
+      ...calendarEvent,
+      id: 'event-2',
+      title: 'Piano Lesson',
+      startAt: buildDateTime(new Date(), '09:00').toISOString(),
+      endAt: buildDateTime(new Date(), '10:00').toISOString(),
+      notes: '',
+    }
+
+    renderApp([
+      ...baseMocks(),
+      {
+        request: {
+          query: CREATE_CALENDAR_EVENT,
+          variables: {
+            familyId: family.id,
+            memberId: emma.id,
+            title: 'Piano Lesson',
+            startAt: newEvent.startAt,
+            endAt: newEvent.endAt,
+            notes: '',
+          },
+        },
+        result: { data: { createCalendarEvent: newEvent } },
+      },
+      {
+        request: {
+          query: GET_CALENDAR_EVENTS,
+          variables: { familyId: family.id, rangeStart: weekRange.start, rangeEnd: weekRange.end },
+        },
+        result: { data: { calendarEvents: [calendarEvent, newEvent] } },
+      },
+      {
+        request: {
+          query: GET_CALENDAR_EVENTS,
+          variables: { familyId: family.id, rangeStart: monthRange.start, rangeEnd: monthRange.end },
+        },
+        result: { data: { calendarEvents: [calendarEvent, newEvent] } },
+      },
+      {
+        request: {
+          query: GET_SCHEDULED_TASKS,
+          variables: { familyId: family.id, rangeStart: monthRange.start, rangeEnd: monthRange.end },
+        },
+        result: { data: { scheduledTasks: [] } },
+      },
+    ])
+
+    await screen.findByRole('heading', { name: /smith family/i })
+    await user.click(screen.getByRole('button', { name: /add calendar event/i }))
+    await user.type(screen.getByPlaceholderText(/guitar lesson/i), 'Piano Lesson')
+    await user.click(screen.getByRole('button', { name: /create event/i }))
+    await screen.findByText('Piano Lesson')
+    await user.click(screen.getByRole('button', { name: 'Month' }))
+
+    expect(await screen.findByRole('region', { name: /month calendar/i })).toBeInTheDocument()
+    expect(await screen.findAllByText('Piano Lesson')).not.toHaveLength(0)
+  })
+
+  it('creates a scheduled chore and shows it on the calendar', async () => {
+    const user = userEvent.setup()
+    const weekRange = currentRange('week')
+    const taskDate = formatDateInput(new Date())
+    const dueAt = buildDateTime(new Date(), '09:00').toISOString()
+    const scheduledTask = {
+      ...task,
+      id: 'task-2',
+      title: 'Water plants',
+      dueAt,
+      durationMinutes: 60,
+    }
+
+    renderApp([
+      ...baseMocks(),
+      {
+        request: {
+          query: CREATE_TASK,
+          variables: {
+            title: 'Water plants',
+            assigneeName: emma.name,
+            familyId: family.id,
+            boardId: family.boardId,
+            status: 'TODO',
+            dueAt,
+            durationMinutes: 60,
+            recurrenceRule: 'None',
+          },
+        },
+        result: { data: { createTask: scheduledTask } },
+      },
+      {
+        request: {
+          query: GET_TASKS,
+          variables: { boardId: family.boardId, includeCompleted: true },
+        },
+        result: { data: { tasks: [task, scheduledTask] } },
+      },
+      {
+        request: {
+          query: GET_SCHEDULED_TASKS,
+          variables: { familyId: family.id, rangeStart: weekRange.start, rangeEnd: weekRange.end },
+        },
+        result: { data: { scheduledTasks: [scheduledTask] } },
+      },
+    ])
+
+    await screen.findByRole('heading', { name: /smith family/i })
+    await user.click(screen.getByRole('button', { name: /chores/i }))
+    await user.type(screen.getByLabelText('Task title'), 'Water plants')
+    await user.selectOptions(screen.getByLabelText('Assignee'), emma.name)
+    await user.type(screen.getByLabelText('Chore date'), taskDate)
+    await user.click(screen.getByRole('button', { name: /^add$/i }))
+    await screen.findByText('Water plants')
+    await user.click(screen.getByRole('button', { name: /calendar/i }))
+
+    expect(await screen.findByText('Water plants')).toBeInTheDocument()
+  })
+
   it('switches active family from the header', async () => {
     const user = userEvent.setup()
     renderApp([
@@ -188,6 +329,13 @@ describe('App', () => {
           variables: { familyId: otherFamily.id, rangeStart: currentRange('week').start, rangeEnd: currentRange('week').end },
         },
         result: { data: { calendarEvents: [] } },
+      },
+      {
+        request: {
+          query: GET_SCHEDULED_TASKS,
+          variables: { familyId: otherFamily.id, rangeStart: currentRange('week').start, rangeEnd: currentRange('week').end },
+        },
+        result: { data: { scheduledTasks: [] } },
       },
       {
         request: { query: GET_TASKS, variables: { boardId: otherFamily.boardId, includeCompleted: true } },

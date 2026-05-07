@@ -9,11 +9,15 @@ type CalendarMode = 'week' | 'month'
 
 interface Task {
   id: string
+  familyId?: string | null
   title: string
   assigneeName: string
   status: TaskStatus
   completed: boolean
   sortOrder: number
+  dueAt?: string | null
+  durationMinutes?: number | null
+  recurrenceRule?: string
   updatedAt: string
 }
 
@@ -45,6 +49,10 @@ interface TasksQueryData {
   tasks: Task[]
 }
 
+interface ScheduledTasksQueryData {
+  scheduledTasks: Task[]
+}
+
 interface FamiliesQueryData {
   families: Family[]
 }
@@ -72,6 +80,13 @@ interface EventFormState {
   endTime: string
   memberId: string
   notes: string
+}
+
+interface TaskScheduleFormState {
+  date: string
+  time: string
+  durationMinutes: string
+  recurrenceRule: string
 }
 
 const BOARD_ID = 'family-home'
@@ -134,15 +149,37 @@ export const GET_CALENDAR_EVENTS = gql`
   }
 `
 
-export const GET_TASKS = gql`
-  query GetTasks($boardId: String!, $includeCompleted: Boolean!) {
-    tasks(boardId: $boardId, includeCompleted: $includeCompleted) {
+export const GET_SCHEDULED_TASKS = gql`
+  query GetScheduledTasks($familyId: String!, $rangeStart: DateTime!, $rangeEnd: DateTime!) {
+    scheduledTasks(familyId: $familyId, rangeStart: $rangeStart, rangeEnd: $rangeEnd) {
       id
+      familyId
       title
       assigneeName
       status
       completed
       sortOrder
+      dueAt
+      durationMinutes
+      recurrenceRule
+      updatedAt
+    }
+  }
+`
+
+export const GET_TASKS = gql`
+  query GetTasks($boardId: String!, $includeCompleted: Boolean!) {
+    tasks(boardId: $boardId, includeCompleted: $includeCompleted) {
+      id
+      familyId
+      title
+      assigneeName
+      status
+      completed
+      sortOrder
+      dueAt
+      durationMinutes
+      recurrenceRule
       updatedAt
     }
   }
@@ -244,15 +281,37 @@ const DELETE_CALENDAR_EVENT = gql`
   }
 `
 
-const CREATE_TASK = gql`
-  mutation CreateTask($title: String!, $assigneeName: String!, $boardId: String!, $status: TaskStatus!) {
-    createTask(title: $title, assigneeName: $assigneeName, boardId: $boardId, status: $status) {
+export const CREATE_TASK = gql`
+  mutation CreateTask(
+    $title: String!
+    $assigneeName: String!
+    $familyId: String
+    $boardId: String!
+    $status: TaskStatus!
+    $dueAt: DateTime
+    $durationMinutes: Int
+    $recurrenceRule: String
+  ) {
+    createTask(
+      title: $title
+      assigneeName: $assigneeName
+      familyId: $familyId
+      boardId: $boardId
+      status: $status
+      dueAt: $dueAt
+      durationMinutes: $durationMinutes
+      recurrenceRule: $recurrenceRule
+    ) {
       id
+      familyId
       title
       assigneeName
       status
       completed
       sortOrder
+      dueAt
+      durationMinutes
+      recurrenceRule
       updatedAt
     }
   }
@@ -295,11 +354,13 @@ function App() {
   const [selectedFamilyId, setSelectedFamilyId] = useState(() => localStorage.getItem(SELECTED_FAMILY_KEY) ?? '')
   const [title, setTitle] = useState('')
   const [assigneeName, setAssigneeName] = useState('')
+  const [taskScheduleForm, setTaskScheduleForm] = useState<TaskScheduleFormState>(() => createDefaultTaskScheduleForm(new Date()))
   const [hideCompleted, setHideCompleted] = useState(false)
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null)
   const [activeDropKey, setActiveDropKey] = useState<string | null>(null)
   const [isEventModalOpen, setIsEventModalOpen] = useState(false)
   const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null)
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null)
   const [eventForm, setEventForm] = useState<EventFormState>(() => createDefaultEventForm(new Date()))
   const [newFamilyName, setNewFamilyName] = useState('')
   const [newMemberName, setNewMemberName] = useState('')
@@ -357,6 +418,19 @@ function App() {
     },
   })
 
+  const {
+    error: scheduledTasksError,
+    data: scheduledTasksData,
+    refetch: refetchScheduledTasks,
+  } = useQuery<ScheduledTasksQueryData>(GET_SCHEDULED_TASKS, {
+    skip: !activeFamilyId,
+    variables: {
+      familyId: activeFamilyId,
+      rangeStart: visibleRange.start.toISOString(),
+      rangeEnd: visibleRange.end.toISOString(),
+    },
+  })
+
   const queryVariables = {
     boardId: activeBoardId,
     includeCompleted: !hideCompleted,
@@ -374,6 +448,7 @@ function App() {
   const members = useMemo(() => membersData?.familyMembers ?? [], [membersData])
   const events = useMemo(() => eventsData?.calendarEvents ?? [], [eventsData])
   const tasks = useMemo(() => tasksData?.tasks ?? [], [tasksData])
+  const scheduledTasks = useMemo(() => scheduledTasksData?.scheduledTasks ?? [], [scheduledTasksData])
 
   useEffect(() => {
     if (members.length > 0) {
@@ -483,7 +558,7 @@ function App() {
   })
 
   const [createTask, { loading: creatingTask }] = useMutation(CREATE_TASK, {
-    refetchQueries: [{ query: GET_TASKS, variables: queryVariables }],
+    refetchQueries: taskRefetchQueries(queryVariables, activeFamilyId, visibleRange),
     awaitRefetchQueries: true,
   })
 
@@ -514,7 +589,7 @@ function App() {
     creatingMember ||
     updatingMember
   const taskSyncError = tasksError?.message ?? null
-  const appSyncError = familyError?.message ?? membersError?.message ?? eventsError?.message ?? taskSyncError
+  const appSyncError = familyError?.message ?? membersError?.message ?? eventsError?.message ?? scheduledTasksError?.message ?? taskSyncError
 
   const handleSelectFamily = (familyId: string) => {
     setSelectedFamilyId(familyId)
@@ -531,12 +606,17 @@ function App() {
       variables: {
         title,
         assigneeName: assigneeName || members[0]?.name || 'Unassigned',
+        familyId: activeFamilyId || null,
         boardId: activeBoardId,
         status: 'TODO',
+        dueAt: taskScheduleForm.date ? buildDateTime(taskScheduleForm.date, taskScheduleForm.time || '09:00').toISOString() : null,
+        durationMinutes: taskScheduleForm.date ? Number(taskScheduleForm.durationMinutes) || 60 : null,
+        recurrenceRule: taskScheduleForm.recurrenceRule,
       },
     })
 
     setTitle('')
+    setTaskScheduleForm(createDefaultTaskScheduleForm(new Date()))
   }
 
   const handleMoveTask = async (targetStatus: TaskStatus, targetOrder: number) => {
@@ -563,6 +643,7 @@ function App() {
 
   const handleDeleteTask = async (taskId: string) => {
     await deleteTask({ variables: { taskId } })
+    setSelectedTask(null)
   }
 
   const handleOpenNewEvent = (date = anchorDate) => {
@@ -673,6 +754,7 @@ function App() {
     void refetchFamilies()
     void refetchMembers()
     void refetchEvents()
+    void refetchScheduledTasks()
     void refetchTasks()
   }
 
@@ -724,7 +806,9 @@ function App() {
               onChangeFamily={handleSelectFamily}
               onOpenEvent={handleOpenEventDetails}
               onOpenNewEvent={handleOpenNewEvent}
+              onOpenTask={setSelectedTask}
               onShiftDate={(direction) => setAnchorDate((current) => shiftDate(current, calendarMode, direction))}
+              scheduledTasks={scheduledTasks}
               taskColorMap={taskColorMap}
               tasks={tasks}
               timeLabel={timeLabel}
@@ -753,7 +837,9 @@ function App() {
               setAssigneeName={setAssigneeName}
               setDraggingTaskId={setDraggingTaskId}
               setHideCompleted={setHideCompleted}
+              setTaskScheduleForm={setTaskScheduleForm}
               setTitle={setTitle}
+              taskScheduleForm={taskScheduleForm}
               taskColorMap={taskColorMap}
               taskSyncError={taskSyncError}
               tasks={tasks}
@@ -805,6 +891,17 @@ function App() {
           onSave={handleSaveEvent}
           setEventForm={setEventForm}
           savingEvent={creatingEvent || updatingEvent}
+        />
+      ) : null}
+
+      {selectedTask ? (
+        <TaskDetailModal
+          pendingMutation={pendingMutation}
+          task={selectedTask}
+          taskColorMap={taskColorMap}
+          onClose={() => setSelectedTask(null)}
+          onDelete={handleDeleteTask}
+          onToggle={handleToggleTask}
         />
       ) : null}
     </div>
@@ -870,7 +967,9 @@ function CalendarView({
   onChangeFamily,
   onOpenEvent,
   onOpenNewEvent,
+  onOpenTask,
   onShiftDate,
+  scheduledTasks,
   taskColorMap,
   tasks,
   timeLabel,
@@ -889,7 +988,9 @@ function CalendarView({
   onChangeFamily: (familyId: string) => void
   onOpenEvent: (event: CalendarEvent) => void
   onOpenNewEvent: (date?: Date) => void
+  onOpenTask: (task: Task) => void
   onShiftDate: (direction: -1 | 1) => void
+  scheduledTasks: Task[]
   taskColorMap: Record<string, string>
   tasks: Task[]
   timeLabel: string
@@ -989,6 +1090,8 @@ function CalendarView({
           events={events}
           memberMap={memberMap}
           onOpenEvent={onOpenEvent}
+          onOpenTask={onOpenTask}
+          scheduledTasks={scheduledTasks}
           taskColorMap={taskColorMap}
           tasks={tasks}
           weekDays={weekDays}
@@ -1001,6 +1104,9 @@ function CalendarView({
           monthDays={monthDays}
           onOpenDay={(date) => onOpenNewEvent(date)}
           onOpenEvent={onOpenEvent}
+          onOpenTask={onOpenTask}
+          scheduledTasks={scheduledTasks}
+          taskColorMap={taskColorMap}
         />
       )}
 
@@ -1017,6 +1123,8 @@ function WeekCalendar({
   events,
   memberMap,
   onOpenEvent,
+  onOpenTask,
+  scheduledTasks,
   taskColorMap,
   tasks,
   weekDays,
@@ -1024,27 +1132,31 @@ function WeekCalendar({
   events: CalendarEvent[]
   memberMap: Record<string, FamilyMember>
   onOpenEvent: (event: CalendarEvent) => void
+  onOpenTask: (task: Task) => void
+  scheduledTasks: Task[]
   taskColorMap: Record<string, string>
   tasks: Task[]
   weekDays: Date[]
 }) {
+  const unscheduledTasks = tasks.filter((task) => !task.dueAt)
+
   return (
     <section className="calendar-board">
       <div className="calendar-day-header spacer" />
-      {weekDays.slice(0, 5).map((day) => (
+      {weekDays.map((day) => (
         <div className="calendar-day-header" key={day.toISOString()}>
           {formatWeekdayLabel(day)}
         </div>
       ))}
 
       <div className="time-label all-day-label">All day</div>
-      {weekDays.slice(0, 5).map((day, dayIndex) => (
+      {weekDays.map((day, dayIndex) => (
         <div className="all-day-cell" key={day.toISOString()}>
           {dayIndex === 0
-            ? tasks.slice(0, 2).map((task) => (
-                <span className="all-day-pill task-pill" key={task.id}>
+            ? unscheduledTasks.slice(0, 2).map((task) => (
+                <button className="all-day-pill task-pill" key={task.id} type="button" onClick={() => onOpenTask(task)}>
                   {task.title}
-                </span>
+                </button>
               ))
             : null}
         </div>
@@ -1060,7 +1172,7 @@ function WeekCalendar({
         </div>
 
         <div className="event-grid">
-          {weekDays.slice(0, 5).map((day) => (
+          {weekDays.map((day) => (
             <div className="day-column" key={day.toISOString()}>
               {TIME_SLOTS.map((hour) => (
                 <div className="hour-line" key={hour} />
@@ -1069,7 +1181,7 @@ function WeekCalendar({
           ))}
 
           {events
-            .filter((event) => getWeekdayIndex(new Date(event.startAt), weekDays) >= 0 && getWeekdayIndex(new Date(event.startAt), weekDays) < 5)
+            .filter((event) => getWeekdayIndex(new Date(event.startAt), weekDays) >= 0 && getWeekdayIndex(new Date(event.startAt), weekDays) < 7)
             .map((event) => {
               const member = event.memberId ? memberMap[event.memberId] : undefined
               return (
@@ -1092,6 +1204,26 @@ function WeekCalendar({
                 </button>
               )
             })}
+
+          {scheduledTasks
+            .filter((task) => task.dueAt && getWeekdayIndex(new Date(task.dueAt), weekDays) >= 0)
+            .map((task) => (
+              <button
+                className={`calendar-event chore-event ${task.completed ? 'is-complete' : ''}`}
+                key={task.id}
+                style={{
+                  ...getTaskStyle(task, weekDays),
+                  '--event-color': taskColorMap[task.assigneeName || 'Unassigned'] ?? '#cfe6ef',
+                  '--chip-color': taskColorMap[task.assigneeName || 'Unassigned'] ?? '#8fbcc0',
+                } as CSSProperties}
+                type="button"
+                onClick={() => onOpenTask(task)}
+              >
+                <strong>{task.title}</strong>
+                <span>{formatTaskTime(task)}</span>
+                <em>{task.assigneeName.charAt(0).toUpperCase() || 'C'}</em>
+              </button>
+            ))}
         </div>
       </div>
     </section>
@@ -1105,6 +1237,9 @@ function MonthCalendar({
   monthDays,
   onOpenDay,
   onOpenEvent,
+  onOpenTask,
+  scheduledTasks,
+  taskColorMap,
 }: {
   anchorDate: Date
   events: CalendarEvent[]
@@ -1112,6 +1247,9 @@ function MonthCalendar({
   monthDays: Date[]
   onOpenDay: (date: Date) => void
   onOpenEvent: (event: CalendarEvent) => void
+  onOpenTask: (task: Task) => void
+  scheduledTasks: Task[]
+  taskColorMap: Record<string, string>
 }) {
   return (
     <section className="month-board" aria-label="Month calendar">
@@ -1122,8 +1260,13 @@ function MonthCalendar({
       ))}
       {monthDays.map((day) => {
         const dayEvents = events.filter((event) => isSameDay(new Date(event.startAt), day))
-        const visibleEvents = dayEvents.slice(0, 3)
-        const overflow = dayEvents.length - visibleEvents.length
+        const dayTasks = scheduledTasks.filter((task) => task.dueAt && isSameDay(new Date(task.dueAt), day))
+        const dayItems = [
+          ...dayEvents.map((event) => ({ type: 'event' as const, event })),
+          ...dayTasks.map((task) => ({ type: 'task' as const, task })),
+        ]
+        const visibleItems = dayItems.slice(0, 3)
+        const overflow = dayItems.length - visibleItems.length
 
         return (
           <article className={`month-day ${day.getMonth() !== anchorDate.getMonth() ? 'muted' : ''}`} key={day.toISOString()}>
@@ -1131,17 +1274,31 @@ function MonthCalendar({
               {day.getDate()}
             </button>
             <div className="month-event-list">
-              {visibleEvents.map((event) => {
-                const member = event.memberId ? memberMap[event.memberId] : undefined
+              {visibleItems.map((item) => {
+                if (item.type === 'task') {
+                  return (
+                    <button
+                      className={`month-event-pill chore-pill ${item.task.completed ? 'is-complete' : ''}`}
+                      key={`task-${item.task.id}`}
+                      style={{ '--event-color': taskColorMap[item.task.assigneeName || 'Unassigned'] ?? '#cfe6ef' } as CSSProperties}
+                      type="button"
+                      onClick={() => onOpenTask(item.task)}
+                    >
+                      {item.task.title}
+                    </button>
+                  )
+                }
+
+                const member = item.event.memberId ? memberMap[item.event.memberId] : undefined
                 return (
                   <button
                     className="month-event-pill"
-                    key={event.id}
-                    style={{ '--event-color': member?.color ?? event.tone ?? '#bfe1df' } as CSSProperties}
+                    key={`event-${item.event.id}`}
+                    style={{ '--event-color': member?.color ?? item.event.tone ?? '#bfe1df' } as CSSProperties}
                     type="button"
-                    onClick={() => onOpenEvent(event)}
+                    onClick={() => onOpenEvent(item.event)}
                   >
-                    {event.title}
+                    {item.event.title}
                   </button>
                 )
               })}
@@ -1271,6 +1428,77 @@ function EventModal({
   )
 }
 
+function TaskDetailModal({
+  onClose,
+  onDelete,
+  onToggle,
+  pendingMutation,
+  task,
+  taskColorMap,
+}: {
+  onClose: () => void
+  onDelete: (taskId: string) => Promise<void>
+  onToggle: (taskId: string) => Promise<void>
+  pendingMutation: boolean
+  task: Task
+  taskColorMap: Record<string, string>
+}) {
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="event-modal" role="dialog" aria-modal="true" aria-label="Chore details">
+        <header className="modal-header">
+          <div>
+            <span className="board-kicker">Chore details</span>
+            <h2>{task.title}</h2>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="Close chore details">
+            X
+          </button>
+        </header>
+
+        <div className="task-detail-body">
+          <span
+            className="task-badge"
+            style={{ '--chip-color': taskColorMap[task.assigneeName || 'Unassigned'] ?? '#94a3b8' } as CSSProperties}
+          >
+            {task.assigneeName || 'Unassigned'}
+          </span>
+          <dl className="detail-list">
+            <div>
+              <dt>Status</dt>
+              <dd>{task.completed ? 'Done' : 'Open'}</dd>
+            </div>
+            <div>
+              <dt>Schedule</dt>
+              <dd>{task.dueAt ? formatShortDateTime(task.dueAt) : 'Unscheduled'}</dd>
+            </div>
+            <div>
+              <dt>Duration</dt>
+              <dd>{task.durationMinutes ? `${task.durationMinutes} minutes` : 'Not set'}</dd>
+            </div>
+            <div>
+              <dt>Repeat</dt>
+              <dd>{task.recurrenceRule && task.recurrenceRule !== 'None' ? task.recurrenceRule : 'No repeat'}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <footer className="modal-actions task-detail-actions">
+          <button className="delete-button" type="button" disabled={pendingMutation} onClick={() => void onDelete(task.id)}>
+            Delete
+          </button>
+          <button className="ghost-button" type="button" onClick={onClose}>
+            Close
+          </button>
+          <button className={`toggle-button ${task.completed ? 'is-complete' : ''}`} type="button" disabled={pendingMutation} onClick={() => void onToggle(task.id)}>
+            {task.completed ? 'Mark open' : 'Mark done'}
+          </button>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
 function ChoresView({
   activeDropKey,
   assigneeName,
@@ -1292,7 +1520,9 @@ function ChoresView({
   setAssigneeName,
   setDraggingTaskId,
   setHideCompleted,
+  setTaskScheduleForm,
   setTitle,
+  taskScheduleForm,
   taskColorMap,
   taskSyncError,
   tasks,
@@ -1318,7 +1548,9 @@ function ChoresView({
   setAssigneeName: (name: string) => void
   setDraggingTaskId: (taskId: string | null) => void
   setHideCompleted: (updater: (current: boolean) => boolean) => void
+  setTaskScheduleForm: (updater: (current: TaskScheduleFormState) => TaskScheduleFormState) => void
   setTitle: (title: string) => void
+  taskScheduleForm: TaskScheduleFormState
   taskColorMap: Record<string, string>
   taskSyncError: string | null
   tasks: Task[]
@@ -1368,6 +1600,38 @@ function ChoresView({
                     {member.name}
                   </option>
                 ))}
+              </select>
+              <input
+                type="date"
+                value={taskScheduleForm.date}
+                onChange={(event) => setTaskScheduleForm((current) => ({ ...current, date: event.target.value }))}
+                aria-label="Chore date"
+              />
+              <input
+                type="time"
+                value={taskScheduleForm.time}
+                onChange={(event) => setTaskScheduleForm((current) => ({ ...current, time: event.target.value }))}
+                aria-label="Chore time"
+              />
+              <select
+                value={taskScheduleForm.durationMinutes}
+                onChange={(event) => setTaskScheduleForm((current) => ({ ...current, durationMinutes: event.target.value }))}
+                aria-label="Chore duration"
+              >
+                <option value="30">30 min</option>
+                <option value="60">1 hour</option>
+                <option value="90">1.5 hours</option>
+                <option value="120">2 hours</option>
+              </select>
+              <select
+                value={taskScheduleForm.recurrenceRule}
+                onChange={(event) => setTaskScheduleForm((current) => ({ ...current, recurrenceRule: event.target.value }))}
+                aria-label="Chore recurrence"
+              >
+                <option value="None">No repeat</option>
+                <option value="Daily">Daily</option>
+                <option value="Weekly">Weekly</option>
+                <option value="Monthly">Monthly</option>
               </select>
               <button className="primary-button" type="submit" disabled={creatingTask}>
                 {creatingTask ? 'Adding...' : 'Add'}
@@ -1449,7 +1713,7 @@ function ChoresView({
                     <div className="task-card-top">
                       <div>
                         <h4>{task.title}</h4>
-                        <p>{task.completed ? 'Completed task' : 'Open task'}</p>
+                        <p>{task.dueAt ? `Scheduled ${formatShortDateTime(task.dueAt)}` : task.completed ? 'Completed task' : 'Open task'}</p>
                       </div>
                       <button className="icon-button" type="button" aria-label="Drag task" title="Drag task">
                         ::
@@ -1746,6 +2010,26 @@ function calendarRefetchQueries(familyId: string, visibleRange: { start: Date; e
   ]
 }
 
+function taskRefetchQueries(queryVariables: { boardId: string; includeCompleted: boolean }, familyId: string, visibleRange: { start: Date; end: Date }) {
+  const refetchQueries = [{ query: GET_TASKS, variables: queryVariables }]
+
+  if (!familyId) {
+    return refetchQueries
+  }
+
+  return [
+    ...refetchQueries,
+    {
+      query: GET_SCHEDULED_TASKS,
+      variables: {
+        familyId,
+        rangeStart: visibleRange.start.toISOString(),
+        rangeEnd: visibleRange.end.toISOString(),
+      },
+    },
+  ]
+}
+
 function getVisibleRange(anchorDate: Date, mode: CalendarMode) {
   if (mode === 'week') {
     const start = startOfWeek(anchorDate)
@@ -1796,7 +2080,7 @@ function formatWeekdayLabel(date: Date) {
 
 function formatWeekRange(date: Date) {
   const start = startOfWeek(date)
-  const end = addDays(start, 4)
+  const end = addDays(start, 6)
   return `${new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(start)} - ${new Intl.DateTimeFormat('en-US', {
     month: 'short',
     day: 'numeric',
@@ -1817,6 +2101,26 @@ function formatHour(hour: number) {
 
 function formatEventTime(value: string) {
   return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(new Date(value))
+}
+
+function formatShortDateTime(value: string) {
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(value))
+}
+
+function formatTaskTime(task: Task) {
+  if (!task.dueAt) {
+    return 'Unscheduled'
+  }
+
+  const start = new Date(task.dueAt)
+  const end = new Date(start)
+  end.setMinutes(end.getMinutes() + (task.durationMinutes ?? 60))
+  return `${formatEventTime(start.toISOString())} - ${formatEventTime(end.toISOString())}`
 }
 
 function getWeekdayIndex(date: Date, weekDays: Date[]) {
@@ -1841,6 +2145,25 @@ function getEventStyle(event: CalendarEvent, weekDays: Date[]): CSSProperties {
   }
 }
 
+function getTaskStyle(task: Task, weekDays: Date[]): CSSProperties {
+  const startAt = task.dueAt ? new Date(task.dueAt) : new Date()
+  const endAt = new Date(startAt)
+  endAt.setMinutes(endAt.getMinutes() + (task.durationMinutes ?? 60))
+
+  return getEventStyle(
+    {
+      id: task.id,
+      familyId: task.familyId ?? '',
+      title: task.title,
+      startAt: startAt.toISOString(),
+      endAt: endAt.toISOString(),
+      notes: '',
+      tone: '#cfe6ef',
+    },
+    weekDays,
+  )
+}
+
 function isSameDay(left: Date, right: Date) {
   return left.getFullYear() === right.getFullYear() && left.getMonth() === right.getMonth() && left.getDate() === right.getDate()
 }
@@ -1857,6 +2180,17 @@ function createDefaultEventForm(date: Date, memberId = ''): EventFormState {
     endTime: '10:00',
     memberId,
     notes: '',
+  }
+}
+
+function createDefaultTaskScheduleForm(date: Date): TaskScheduleFormState {
+  void date
+
+  return {
+    date: '',
+    time: '09:00',
+    durationMinutes: '60',
+    recurrenceRule: 'None',
   }
 }
 

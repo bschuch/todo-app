@@ -189,8 +189,12 @@ public class Mutation
         string title,
         string assigneeName,
         [Service] TodoDbContext dbContext,
+        string? familyId = null,
         string boardId = "family-home",
-        WorkflowTaskStatus status = WorkflowTaskStatus.Todo)
+        WorkflowTaskStatus status = WorkflowTaskStatus.Todo,
+        DateTime? dueAt = null,
+        int? durationMinutes = null,
+        string? recurrenceRule = null)
     {
         var normalizedTitle = title.Trim();
         if (string.IsNullOrWhiteSpace(normalizedTitle))
@@ -198,21 +202,51 @@ public class Mutation
             throw new GraphQLException("Task title is required.");
         }
 
+        await ValidateTaskScheduleAsync(dbContext, familyId, dueAt, durationMinutes);
+
         var nextOrder = await GetNextSortOrderAsync(dbContext, boardId, status);
         var task = new Todo
         {
             Id = ObjectId.GenerateNewId().ToString(),
             Title = normalizedTitle,
+            FamilyId = string.IsNullOrWhiteSpace(familyId) ? null : familyId,
             AssigneeName = assigneeName.Trim(),
             BoardId = boardId,
             Status = status,
             SortOrder = nextOrder,
+            DueAt = dueAt?.ToUniversalTime(),
+            DurationMinutes = durationMinutes,
+            RecurrenceRule = NormalizeRecurrenceRule(recurrenceRule),
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
             Completed = status == WorkflowTaskStatus.Done
         };
 
         dbContext.Todos.Add(task);
+        await dbContext.SaveChangesAsync();
+        return task;
+    }
+
+    public async Task<Todo?> UpdateTaskSchedule(
+        string taskId,
+        DateTime? dueAt,
+        int? durationMinutes,
+        string? recurrenceRule,
+        [Service] TodoDbContext dbContext)
+    {
+        var task = await dbContext.Todos.FirstOrDefaultAsync(currentTask => currentTask.Id == taskId);
+        if (task == null)
+        {
+            return null;
+        }
+
+        await ValidateTaskScheduleAsync(dbContext, task.FamilyId, dueAt, durationMinutes);
+
+        task.DueAt = dueAt?.ToUniversalTime();
+        task.DurationMinutes = durationMinutes;
+        task.RecurrenceRule = NormalizeRecurrenceRule(recurrenceRule);
+        task.UpdatedAt = DateTime.UtcNow;
+
         await dbContext.SaveChangesAsync();
         return task;
     }
@@ -361,6 +395,33 @@ public class Mutation
         }
     }
 
+    private static async Task ValidateTaskScheduleAsync(TodoDbContext dbContext, string? familyId, DateTime? dueAt, int? durationMinutes)
+    {
+        if (!string.IsNullOrWhiteSpace(familyId))
+        {
+            var familyExists = await dbContext.Families.AnyAsync(family => family.Id == familyId);
+            if (!familyExists)
+            {
+                throw new GraphQLException("Family was not found.");
+            }
+        }
+
+        if (dueAt == null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(familyId))
+        {
+            throw new GraphQLException("Scheduled tasks require a family.");
+        }
+
+        if (durationMinutes is <= 0 or > 1440)
+        {
+            throw new GraphQLException("Task duration must be between 1 and 1440 minutes.");
+        }
+    }
+
     private static async Task<string> ResolveMemberToneAsync(TodoDbContext dbContext, string? memberId)
     {
         if (string.IsNullOrWhiteSpace(memberId))
@@ -388,5 +449,11 @@ public class Mutation
     {
         var normalized = color.Trim();
         return string.IsNullOrWhiteSpace(normalized) ? "#6dbec2" : normalized;
+    }
+
+    private static string NormalizeRecurrenceRule(string? recurrenceRule)
+    {
+        var normalized = recurrenceRule?.Trim();
+        return normalized is "Daily" or "Weekly" or "Monthly" ? normalized : "None";
     }
 }
