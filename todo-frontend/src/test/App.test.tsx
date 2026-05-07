@@ -2,11 +2,24 @@ import { MockedProvider } from '@apollo/client/testing/react'
 import type { MockedResponse } from '@apollo/client/testing'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import App, { CREATE_CALENDAR_EVENT, CREATE_TASK, GET_CALENDAR_EVENTS, GET_FAMILIES, GET_FAMILY_MEMBERS, GET_SCHEDULED_TASKS, GET_TASKS } from '../App'
+import App, {
+  ACCEPT_FAMILY_INVITE,
+  CREATE_CALENDAR_EVENT,
+  CREATE_FAMILY_INVITE,
+  CREATE_TASK,
+  GET_CALENDAR_EVENTS,
+  GET_CURRENT_USER,
+  GET_FAMILIES,
+  GET_FAMILY_MEMBERS,
+  GET_SCHEDULED_TASKS,
+  GET_TASKS,
+  SIGN_IN,
+} from '../App'
 
 const family = { id: 'family-1', name: 'Smith Family', boardId: 'family-home' }
 const otherFamily = { id: 'family-2', name: 'Garcia Family', boardId: 'garcia-family' }
 const emma = { id: 'member-1', familyId: 'family-1', name: 'Emma', color: '#6dbec2' }
+const currentUser = { id: 'user-1', email: 'parent@example.com', displayName: 'Parent' }
 
 const task = {
   id: 'task-1',
@@ -50,6 +63,10 @@ function baseMocks({ eventError = false } = {}): MockedResponse[] {
   const weekRange = currentRange('week')
 
   return [
+    {
+      request: { query: GET_CURRENT_USER },
+      result: { data: { currentUser } },
+    },
     {
       request: { query: GET_FAMILIES },
       result: { data: { families: [family, otherFamily] } },
@@ -110,12 +127,51 @@ describe('App', () => {
     renderApp()
 
     expect(await screen.findByRole('heading', { name: /smith family/i })).toBeInTheDocument()
+    expect(screen.getByText(/signed in as parent/i)).toBeInTheDocument()
     const nav = screen.getByRole('navigation')
     expect(within(nav).getByRole('button', { name: /calendar/i })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('button', { name: 'Week' })).toHaveClass('active')
     expect(await screen.findByText('Grocery Run')).toBeInTheDocument()
     expect(screen.getByText('Clean room')).toBeInTheDocument()
     expect(screen.getByText(/sat/i)).toBeInTheDocument()
+  })
+
+  it('renders sign-in access and submits credentials', async () => {
+    const user = userEvent.setup()
+    const weekRange = currentRange('week')
+
+    renderApp([
+      { request: { query: GET_CURRENT_USER }, result: { data: { currentUser: null } } },
+      { request: { query: GET_FAMILIES }, result: { data: { families: [] } } },
+      { request: { query: GET_TASKS, variables: { boardId: 'family-home', includeCompleted: true } }, result: { data: { tasks: [] } } },
+      {
+        request: {
+          query: SIGN_IN,
+          variables: { email: 'parent@example.com', password: 'password123' },
+        },
+        result: { data: { signIn: { token: 'session-token', user: currentUser } } },
+      },
+      { request: { query: GET_CURRENT_USER }, result: { data: { currentUser } } },
+      { request: { query: GET_FAMILIES }, result: { data: { families: [family] } } },
+      { request: { query: GET_FAMILY_MEMBERS, variables: { familyId: family.id } }, result: { data: { familyMembers: [emma] } } },
+      {
+        request: { query: GET_CALENDAR_EVENTS, variables: { familyId: family.id, rangeStart: weekRange.start, rangeEnd: weekRange.end } },
+        result: { data: { calendarEvents: [calendarEvent] } },
+      },
+      { request: { query: GET_TASKS, variables: { boardId: family.boardId, includeCompleted: true } }, result: { data: { tasks: [task] } } },
+      {
+        request: { query: GET_SCHEDULED_TASKS, variables: { familyId: family.id, rangeStart: weekRange.start, rangeEnd: weekRange.end } },
+        result: { data: { scheduledTasks: [] } },
+      },
+    ])
+
+    expect(await screen.findByLabelText('Email')).toBeInTheDocument()
+    await user.type(screen.getByLabelText('Email'), 'parent@example.com')
+    await user.type(screen.getByLabelText('Password'), 'password123')
+    await user.click(screen.getAllByRole('button', { name: /sign in/i }).find((button) => button.getAttribute('type') === 'submit')!)
+
+    expect(await screen.findByText(/signed in as parent/i)).toBeInTheDocument()
+    expect(localStorage.getItem('todo-app-session-token')).toBe('session-token')
   })
 
   it('switches to month view', async () => {
@@ -362,6 +418,32 @@ describe('App', () => {
     expect(screen.getByPlaceholderText(/avery/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /create family/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /add member/i })).toBeInTheDocument()
+  })
+
+  it('creates and accepts family invite codes', async () => {
+    const user = userEvent.setup()
+    const invite = { id: 'invite-1', familyId: family.id, code: 'ABCD123456', expiresAt: new Date(Date.now() + 86400000).toISOString() }
+    renderApp([
+      ...baseMocks(),
+      {
+        request: { query: CREATE_FAMILY_INVITE, variables: { familyId: family.id } },
+        result: { data: { createFamilyInvite: invite } },
+      },
+      {
+        request: { query: ACCEPT_FAMILY_INVITE, variables: { code: invite.code } },
+        result: { data: { acceptFamilyInvite: family } },
+      },
+      { request: { query: GET_FAMILIES }, result: { data: { families: [family, otherFamily] } } },
+    ])
+
+    await screen.findByRole('heading', { name: /smith family/i })
+    await user.click(screen.getByRole('button', { name: /settings/i }))
+    await user.click(await screen.findByRole('button', { name: /create invite/i }))
+    expect(await screen.findByText(invite.code)).toBeInTheDocument()
+    await user.type(screen.getByLabelText('Invite code'), invite.code)
+    await user.click(screen.getByRole('button', { name: /join family/i }))
+
+    expect(await screen.findByRole('heading', { name: /family app settings/i })).toBeInTheDocument()
   })
 
   it('opens event details with edit and delete controls', async () => {

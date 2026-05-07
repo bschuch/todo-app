@@ -12,6 +12,9 @@ public class TodoDbContext : DbContext
     public DbSet<Family> Families { get; set; } = null!;
     public DbSet<FamilyMember> FamilyMembers { get; set; } = null!;
     public DbSet<CalendarEvent> CalendarEvents { get; set; } = null!;
+    public DbSet<AppUser> AppUsers { get; set; } = null!;
+    public DbSet<FamilyMembership> FamilyMemberships { get; set; } = null!;
+    public DbSet<FamilyInvite> FamilyInvites { get; set; } = null!;
 
     public TodoDbContext(DbContextOptions<TodoDbContext> options) : base(options)
     {
@@ -25,6 +28,9 @@ public class TodoDbContext : DbContext
         ConfigureMongoEntity<Family>(modelBuilder, "families");
         ConfigureMongoEntity<FamilyMember>(modelBuilder, "familyMembers");
         ConfigureMongoEntity<CalendarEvent>(modelBuilder, "calendarEvents");
+        ConfigureMongoEntity<AppUser>(modelBuilder, "appUsers");
+        ConfigureMongoEntity<FamilyMembership>(modelBuilder, "familyMemberships");
+        ConfigureMongoEntity<FamilyInvite>(modelBuilder, "familyInvites");
     }
 
     private static void ConfigureMongoEntity<TEntity>(ModelBuilder modelBuilder, string collectionName)

@@ -3,8 +3,14 @@ using MongoDB.Bson;
 using TodoBackend.Data;
 using TodoBackend.GraphQL;
 using TodoBackend.Models;
+using TodoBackend.Services;
 using WorkflowTaskStatus = TodoBackend.Models.TaskStatus;
 var builder = WebApplication.CreateBuilder(args);
+var port = Environment.GetEnvironmentVariable("PORT");
+if (!string.IsNullOrWhiteSpace(port))
+{
+    builder.WebHost.UseUrls($"http://*:{port}");
+}
 
 var allowedOrigins = builder.Configuration
     .GetSection("Cors:AllowedOrigins")
@@ -15,22 +21,25 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("FrontendPolicy", policy =>
         policy.WithOrigins(allowedOrigins)
-              .SetIsOriginAllowed(IsAllowedFrontendOrigin)
+              .SetIsOriginAllowed(origin => builder.Environment.IsDevelopment() && IsAllowedFrontendOrigin(origin))
               .AllowAnyMethod()
               .AllowAnyHeader());
 });
 
-// 2. Add MongoDB EF Core Context
-var mongoClient = new MongoDB.Driver.MongoClient("mongodb://localhost:27017");
+var mongoConnectionString = builder.Configuration["Mongo:ConnectionString"] ?? "mongodb://localhost:27017";
+var mongoDatabaseName = builder.Configuration["Mongo:DatabaseName"] ?? "TodoDatabase";
+var mongoClient = new MongoDB.Driver.MongoClient(mongoConnectionString);
 builder.Services.AddDbContext<TodoDbContext>(options =>
-    options.UseMongoDB(mongoClient, "TodoDatabase"));
+    options.UseMongoDB(mongoClient, mongoDatabaseName));
 
-// 3. Add Hotchocolate GraphQL Server
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<AuthService>();
+
 builder.Services
     .AddGraphQLServer()
     .AddQueryType<Query>()
     .AddMutationType<Mutation>()
-    .ModifyRequestOptions(opt => opt.IncludeExceptionDetails = true); // Show full error on dev
+    .ModifyRequestOptions(opt => opt.IncludeExceptionDetails = builder.Environment.IsDevelopment());
 
 var app = builder.Build();
 
@@ -62,6 +71,37 @@ static async Task SeedDataAsync(IServiceProvider services)
         };
 
         dbContext.Families.Add(defaultFamily);
+        await dbContext.SaveChangesAsync();
+    }
+
+    var demoUser = await dbContext.AppUsers.FirstOrDefaultAsync(user => user.Email == "demo@family.local");
+    if (demoUser == null)
+    {
+        demoUser = new AppUser
+        {
+            Id = ObjectId.GenerateNewId().ToString(),
+            Email = "demo@family.local",
+            DisplayName = "Demo Family",
+            PasswordHash = AuthService.HashPassword("family-demo"),
+            SessionToken = AuthService.CreateSessionToken(),
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        dbContext.AppUsers.Add(demoUser);
+        await dbContext.SaveChangesAsync();
+    }
+
+    if (!await dbContext.FamilyMemberships.AnyAsync(membership => membership.UserId == demoUser.Id && membership.FamilyId == defaultFamily.Id))
+    {
+        dbContext.FamilyMemberships.Add(new FamilyMembership
+        {
+            Id = ObjectId.GenerateNewId().ToString(),
+            FamilyId = defaultFamily.Id,
+            UserId = demoUser.Id,
+            Role = "Owner",
+            CreatedAt = now
+        });
         await dbContext.SaveChangesAsync();
     }
 

@@ -119,6 +119,43 @@
   font-size: 0.9rem;
 }
 
+.access-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid #dce8ee;
+  border-radius: 8px;
+  background: #f8fbfc;
+}
+
+.access-bar > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.access-actions,
+.auth-form,
+.invite-accept-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.auth-form input,
+.invite-accept-form input {
+  min-height: 38px;
+  border: 1px solid #d5e0e8;
+  border-radius: 8px;
+  padding: 9px 11px;
+  background: #fff;
+  color: #26323d;
+  font: inherit;
+}
+
 .calendar-view {
   position: relative;
   min-height: calc(100vh - 96px);
@@ -742,6 +779,12 @@
   font-size: 1rem;
 }
 
+.settings-note {
+  margin: 0 0 4px;
+  color: #687481;
+  font-weight: 700;
+}
+
 .setting-row.form-setting {
   grid-template-columns: minmax(110px, 0.35fr) minmax(0, 1fr) auto;
 }
@@ -1211,10 +1254,12 @@
   }
 
   .calendar-actions,
-  .toolbar {
+  .toolbar,
+  .access-bar {
     width: 100%;
     align-items: stretch;
     justify-content: flex-start;
+    flex-direction: column;
   }
 
   .member-progress {
@@ -1275,6 +1320,13 @@
   }
 
   .sync-banner {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .auth-form,
+  .access-actions,
+  .invite-accept-form {
     align-items: stretch;
     flex-direction: column;
   }

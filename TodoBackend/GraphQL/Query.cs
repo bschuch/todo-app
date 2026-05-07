@@ -1,38 +1,101 @@
 using TodoBackend.Data;
 using TodoBackend.Models;
 using Microsoft.EntityFrameworkCore;
+using TodoBackend.Services;
 namespace TodoBackend.GraphQL;
 
 public class Query
 {
-    public IQueryable<Family> GetFamilies([Service] TodoDbContext context) =>
-        context.Families.OrderBy(family => family.Name);
+    public async Task<AppUser?> GetCurrentUser([Service] TodoDbContext context, [Service] AuthService authService)
+    {
+        var currentUser = await authService.GetCurrentUserAsync(context);
+        if (currentUser == null)
+        {
+            return null;
+        }
 
-    public async Task<Family?> GetFamily([Service] TodoDbContext context, string id) =>
-        await context.Families.FirstOrDefaultAsync(family => family.Id == id);
+        return new AppUser
+        {
+            Id = currentUser.Id,
+            Email = currentUser.Email,
+            DisplayName = currentUser.DisplayName,
+            PasswordHash = string.Empty,
+            SessionToken = string.Empty
+        };
+    }
 
-    public IQueryable<FamilyMember> GetFamilyMembers([Service] TodoDbContext context, string familyId) =>
-        context.FamilyMembers
+    public async Task<List<Family>> GetFamilies([Service] TodoDbContext context, [Service] AuthService authService)
+    {
+        var currentUser = await authService.GetCurrentUserAsync(context);
+        if (currentUser == null)
+        {
+            return [];
+        }
+
+        if (currentUser.IsDemo)
+        {
+            return await context.Families.OrderBy(family => family.Name).ToListAsync();
+        }
+
+        var familyIds = await context.FamilyMemberships
+            .Where(membership => membership.UserId == currentUser.Id)
+            .Select(membership => membership.FamilyId)
+            .ToListAsync();
+
+        return await context.Families
+            .Where(family => familyIds.Contains(family.Id))
+            .OrderBy(family => family.Name)
+            .ToListAsync();
+    }
+
+    public async Task<Family?> GetFamily([Service] TodoDbContext context, [Service] AuthService authService, string id)
+    {
+        await authService.RequireFamilyAccessAsync(context, id);
+        return await context.Families.FirstOrDefaultAsync(family => family.Id == id);
+    }
+
+    public async Task<List<FamilyMember>> GetFamilyMembers([Service] TodoDbContext context, [Service] AuthService authService, string familyId)
+    {
+        await authService.RequireFamilyAccessAsync(context, familyId);
+        return await context.FamilyMembers
             .Where(member => member.FamilyId == familyId)
-            .OrderBy(member => member.Name);
+            .OrderBy(member => member.Name)
+            .ToListAsync();
+    }
 
-    public IQueryable<CalendarEvent> GetCalendarEvents(
+    public async Task<List<CalendarEvent>> GetCalendarEvents(
         [Service] TodoDbContext context,
+        [Service] AuthService authService,
         string familyId,
         DateTime rangeStart,
-        DateTime rangeEnd) =>
-        context.CalendarEvents
+        DateTime rangeEnd)
+    {
+        await authService.RequireFamilyAccessAsync(context, familyId);
+        return await context.CalendarEvents
             .Where(calendarEvent =>
                 calendarEvent.FamilyId == familyId &&
                 calendarEvent.StartAt < rangeEnd &&
                 calendarEvent.EndAt > rangeStart)
-            .OrderBy(calendarEvent => calendarEvent.StartAt);
+            .OrderBy(calendarEvent => calendarEvent.StartAt)
+            .ToListAsync();
+    }
 
-    public IQueryable<Todo> GetTasks(
+    public async Task<List<Todo>> GetTasks(
         [Service] TodoDbContext context,
+        [Service] AuthService authService,
         string boardId = "family-home",
         bool includeCompleted = true)
     {
+        var family = await context.Families.FirstOrDefaultAsync(currentFamily => currentFamily.BoardId == boardId);
+        if (family != null)
+        {
+            await authService.RequireFamilyAccessAsync(context, family.Id);
+        }
+        else
+        {
+            await authService.RequireCurrentUserAsync(context);
+        }
+
         var query = context.Todos.Where(task => task.BoardId == boardId);
 
         if (!includeCompleted)
@@ -40,22 +103,30 @@ public class Query
             query = query.Where(task => !task.Completed);
         }
 
-        return query.OrderBy(task => task.Status).ThenBy(task => task.SortOrder);
+        return await query.OrderBy(task => task.Status).ThenBy(task => task.SortOrder).ToListAsync();
     }
 
-    public IQueryable<Todo> GetScheduledTasks(
+    public async Task<List<Todo>> GetScheduledTasks(
         [Service] TodoDbContext context,
+        [Service] AuthService authService,
         string familyId,
         DateTime rangeStart,
-        DateTime rangeEnd) =>
-        context.Todos
+        DateTime rangeEnd)
+    {
+        await authService.RequireFamilyAccessAsync(context, familyId);
+        return await context.Todos
             .Where(task =>
                 task.FamilyId == familyId &&
                 task.DueAt != null &&
                 task.DueAt >= rangeStart &&
                 task.DueAt < rangeEnd)
-            .OrderBy(task => task.DueAt);
+            .OrderBy(task => task.DueAt)
+            .ToListAsync();
+    }
 
-    public IQueryable<Todo> GetTodos([Service] TodoDbContext context) =>
-        context.Todos.OrderBy(task => task.Status).ThenBy(task => task.SortOrder);
+    public async Task<List<Todo>> GetTodos([Service] TodoDbContext context, [Service] AuthService authService)
+    {
+        await authService.RequireCurrentUserAsync(context);
+        return await context.Todos.OrderBy(task => task.Status).ThenBy(task => task.SortOrder).ToListAsync();
+    }
 }

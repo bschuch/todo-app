@@ -1,11 +1,12 @@
 import { gql } from '@apollo/client'
-import { useMutation, useQuery } from '@apollo/client/react'
+import { useApolloClient, useMutation, useQuery } from '@apollo/client/react'
 import { type CSSProperties, type FormEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
 import './App.css'
 
 type TaskStatus = 'TODO' | 'IN_PROGRESS' | 'DONE'
 type AppSection = 'Calendar' | 'Chores' | 'Rewards' | 'Meals' | 'Photos' | 'Lists' | 'Sleep' | 'Settings'
 type CalendarMode = 'week' | 'month'
+type AuthMode = 'signin' | 'signup'
 
 interface Task {
   id: string
@@ -34,6 +35,21 @@ interface FamilyMember {
   color: string
 }
 
+interface AppUser {
+  id: string
+  email: string
+  displayName: string
+}
+
+interface CurrentUserQueryData {
+  currentUser: AppUser | null
+}
+
+interface AuthPayload {
+  user: AppUser
+  token: string
+}
+
 interface CalendarEvent {
   id: string
   familyId: string
@@ -43,6 +59,13 @@ interface CalendarEvent {
   endAt: string
   notes: string
   tone: string
+}
+
+interface FamilyInvite {
+  id: string
+  familyId: string
+  code: string
+  expiresAt: string
 }
 
 interface TasksQueryData {
@@ -91,6 +114,7 @@ interface TaskScheduleFormState {
 
 const BOARD_ID = 'family-home'
 const SELECTED_FAMILY_KEY = 'todo-app-selected-family-id'
+const SESSION_TOKEN_KEY = 'todo-app-session-token'
 
 const STATUS_COLUMNS: Array<{ id: TaskStatus; title: string; description: string }> = [
   { id: 'TODO', title: 'To do', description: 'Ready to be picked up next.' },
@@ -113,9 +137,66 @@ const APP_SECTIONS: Array<{ id: AppSection; label: string; icon: string }> = [
   { id: 'Settings', label: 'Settings', icon: 'St' },
 ]
 
+export const GET_CURRENT_USER = gql`
+  query GetCurrentUser {
+    currentUser {
+      id
+      email
+      displayName
+    }
+  }
+`
+
 export const GET_FAMILIES = gql`
   query GetFamilies {
     families {
+      id
+      name
+      boardId
+    }
+  }
+`
+
+export const SIGN_UP = gql`
+  mutation SignUp($email: String!, $displayName: String!, $password: String!) {
+    signUp(email: $email, displayName: $displayName, password: $password) {
+      token
+      user {
+        id
+        email
+        displayName
+      }
+    }
+  }
+`
+
+export const SIGN_IN = gql`
+  mutation SignIn($email: String!, $password: String!) {
+    signIn(email: $email, password: $password) {
+      token
+      user {
+        id
+        email
+        displayName
+      }
+    }
+  }
+`
+
+export const CREATE_FAMILY_INVITE = gql`
+  mutation CreateFamilyInvite($familyId: String!) {
+    createFamilyInvite(familyId: $familyId) {
+      id
+      familyId
+      code
+      expiresAt
+    }
+  }
+`
+
+export const ACCEPT_FAMILY_INVITE = gql`
+  mutation AcceptFamilyInvite($code: String!) {
+    acceptFamilyInvite(code: $code) {
       id
       name
       boardId
@@ -348,10 +429,18 @@ const DELETE_TASK = gql`
 `
 
 function App() {
+  const apolloClient = useApolloClient()
   const [activeSection, setActiveSection] = useState<AppSection>('Calendar')
   const [calendarMode, setCalendarMode] = useState<CalendarMode>('week')
   const [anchorDate, setAnchorDate] = useState(() => new Date())
   const [selectedFamilyId, setSelectedFamilyId] = useState(() => localStorage.getItem(SELECTED_FAMILY_KEY) ?? '')
+  const [sessionToken, setSessionToken] = useState(() => localStorage.getItem(SESSION_TOKEN_KEY) ?? '')
+  const [authMode, setAuthMode] = useState<AuthMode>('signin')
+  const [authEmail, setAuthEmail] = useState('')
+  const [authDisplayName, setAuthDisplayName] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [inviteCode, setInviteCode] = useState('')
+  const [latestInvite, setLatestInvite] = useState<FamilyInvite | null>(null)
   const [title, setTitle] = useState('')
   const [assigneeName, setAssigneeName] = useState('')
   const [taskScheduleForm, setTaskScheduleForm] = useState<TaskScheduleFormState>(() => createDefaultTaskScheduleForm(new Date()))
@@ -368,6 +457,15 @@ function App() {
   const [memberDrafts, setMemberDrafts] = useState<Record<string, { name: string; color: string }>>({})
 
   const visibleRange = useMemo(() => getVisibleRange(anchorDate, calendarMode), [anchorDate, calendarMode])
+
+  const {
+    loading: loadingCurrentUser,
+    error: currentUserError,
+    data: currentUserData,
+    refetch: refetchCurrentUser,
+  } = useQuery<CurrentUserQueryData>(GET_CURRENT_USER)
+
+  const currentUser = currentUserData?.currentUser ?? null
 
   const {
     loading: loadingFamilies,
@@ -527,6 +625,9 @@ function App() {
     [tasks],
   )
 
+  const [signUp, { loading: signingUp }] = useMutation(SIGN_UP)
+  const [signIn, { loading: signingIn }] = useMutation(SIGN_IN)
+
   const [createFamily, { loading: creatingFamily }] = useMutation(CREATE_FAMILY, {
     refetchQueries: [{ query: GET_FAMILIES }],
     awaitRefetchQueries: true,
@@ -539,6 +640,12 @@ function App() {
 
   const [updateFamilyMember, { loading: updatingMember }] = useMutation(UPDATE_FAMILY_MEMBER, {
     refetchQueries: activeFamilyId ? [{ query: GET_FAMILY_MEMBERS, variables: { familyId: activeFamilyId } }] : [],
+    awaitRefetchQueries: true,
+  })
+
+  const [createFamilyInvite, { loading: creatingInvite }] = useMutation(CREATE_FAMILY_INVITE)
+  const [acceptFamilyInvite, { loading: acceptingInvite }] = useMutation(ACCEPT_FAMILY_INVITE, {
+    refetchQueries: [{ query: GET_FAMILIES }],
     awaitRefetchQueries: true,
   })
 
@@ -589,7 +696,36 @@ function App() {
     creatingMember ||
     updatingMember
   const taskSyncError = tasksError?.message ?? null
-  const appSyncError = familyError?.message ?? membersError?.message ?? eventsError?.message ?? scheduledTasksError?.message ?? taskSyncError
+  const authSyncError = currentUserError?.message ?? null
+  const appSyncError = authSyncError ?? familyError?.message ?? membersError?.message ?? eventsError?.message ?? scheduledTasksError?.message ?? taskSyncError
+
+  const handleAuthSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!authEmail.trim() || !authPassword.trim() || (authMode === 'signup' && !authDisplayName.trim())) {
+      return
+    }
+
+    const result =
+      authMode === 'signup'
+        ? await signUp({ variables: { email: authEmail, displayName: authDisplayName, password: authPassword } })
+        : await signIn({ variables: { email: authEmail, password: authPassword } })
+    const payload = (result.data as { signUp?: AuthPayload; signIn?: AuthPayload } | undefined)?.signUp ?? (result.data as { signIn?: AuthPayload } | undefined)?.signIn
+
+    if (payload?.token) {
+      localStorage.setItem(SESSION_TOKEN_KEY, payload.token)
+      setSessionToken(payload.token)
+      setAuthPassword('')
+      await apolloClient.resetStore()
+    }
+  }
+
+  const handleSignOut = async () => {
+    localStorage.removeItem(SESSION_TOKEN_KEY)
+    setSessionToken('')
+    setSelectedFamilyId('')
+    localStorage.removeItem(SELECTED_FAMILY_KEY)
+    await apolloClient.resetStore()
+  }
 
   const handleSelectFamily = (familyId: string) => {
     setSelectedFamilyId(familyId)
@@ -751,6 +887,7 @@ function App() {
   }
 
   const retrySync = () => {
+    void refetchCurrentUser()
     void refetchFamilies()
     void refetchMembers()
     void refetchEvents()
@@ -789,6 +926,38 @@ function App() {
 
         <section className="content-panel">
           {appSyncError ? <SyncBanner message={appSyncError} onRetry={retrySync} /> : null}
+          <AccessBar
+            acceptingInvite={acceptingInvite}
+            authDisplayName={authDisplayName}
+            authEmail={authEmail}
+            authMode={authMode}
+            authPassword={authPassword}
+            currentUser={currentUser}
+            hasSession={Boolean(sessionToken)}
+            inviteCode={inviteCode}
+            loadingCurrentUser={loadingCurrentUser}
+            onAcceptInvite={async (event) => {
+              event.preventDefault()
+              if (!inviteCode.trim()) {
+                return
+              }
+              const result = await acceptFamilyInvite({ variables: { code: inviteCode } })
+              const family = (result.data as { acceptFamilyInvite?: Family } | undefined)?.acceptFamilyInvite
+              if (family) {
+                handleSelectFamily(family.id)
+              }
+              setInviteCode('')
+            }}
+            onAuthSubmit={handleAuthSubmit}
+            onSignOut={handleSignOut}
+            setAuthDisplayName={setAuthDisplayName}
+            setAuthEmail={setAuthEmail}
+            setAuthMode={setAuthMode}
+            setAuthPassword={setAuthPassword}
+            setInviteCode={setInviteCode}
+            signingIn={signingIn}
+            signingUp={signingUp}
+          />
 
           {activeSection === 'Calendar' ? (
             <CalendarView
@@ -867,6 +1036,18 @@ function App() {
               newMemberColor={newMemberColor}
               newMemberName={newMemberName}
               onChangeFamily={handleSelectFamily}
+              creatingInvite={creatingInvite}
+              latestInvite={latestInvite}
+              handleCreateInvite={async () => {
+                if (!activeFamilyId) {
+                  return
+                }
+                const result = await createFamilyInvite({ variables: { familyId: activeFamilyId } })
+                const invite = (result.data as { createFamilyInvite?: FamilyInvite } | undefined)?.createFamilyInvite
+                if (invite) {
+                  setLatestInvite(invite)
+                }
+              }}
               setMemberDrafts={setMemberDrafts}
               setNewFamilyName={setNewFamilyName}
               setNewMemberColor={setNewMemberColor}
@@ -919,6 +1100,92 @@ function SyncBanner({ message, onRetry }: { message: string; onRetry: () => void
         Retry sync
       </button>
     </aside>
+  )
+}
+
+function AccessBar({
+  acceptingInvite,
+  authDisplayName,
+  authEmail,
+  authMode,
+  authPassword,
+  currentUser,
+  hasSession,
+  inviteCode,
+  loadingCurrentUser,
+  onAcceptInvite,
+  onAuthSubmit,
+  onSignOut,
+  setAuthDisplayName,
+  setAuthEmail,
+  setAuthMode,
+  setAuthPassword,
+  setInviteCode,
+  signingIn,
+  signingUp,
+}: {
+  acceptingInvite: boolean
+  authDisplayName: string
+  authEmail: string
+  authMode: AuthMode
+  authPassword: string
+  currentUser: AppUser | null
+  hasSession: boolean
+  inviteCode: string
+  loadingCurrentUser: boolean
+  onAcceptInvite: (event: FormEvent<HTMLFormElement>) => Promise<void>
+  onAuthSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>
+  onSignOut: () => Promise<void>
+  setAuthDisplayName: (value: string) => void
+  setAuthEmail: (value: string) => void
+  setAuthMode: (mode: AuthMode) => void
+  setAuthPassword: (value: string) => void
+  setInviteCode: (value: string) => void
+  signingIn: boolean
+  signingUp: boolean
+}) {
+  const isSigning = signingIn || signingUp
+
+  return (
+    <section className="access-bar" aria-label="Family access">
+      <div>
+        <span className="board-kicker">Private access</span>
+        <strong>{currentUser ? `Signed in as ${currentUser.displayName}` : hasSession || loadingCurrentUser ? 'Checking access...' : 'Demo mode or sign in'}</strong>
+      </div>
+
+      {currentUser ? (
+        <div className="access-actions">
+          <form className="invite-accept-form" onSubmit={(event) => void onAcceptInvite(event)}>
+            <input value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} placeholder="Invite code" aria-label="Invite code" />
+            <button className="ghost-button" type="submit" disabled={acceptingInvite}>
+              {acceptingInvite ? 'Joining...' : 'Join family'}
+            </button>
+          </form>
+          <button className="ghost-button" type="button" onClick={() => void onSignOut()}>
+            Sign out
+          </button>
+        </div>
+      ) : (
+        <form className="auth-form" onSubmit={(event) => void onAuthSubmit(event)}>
+          <div className="segmented-control" aria-label="Access mode">
+            <button className={authMode === 'signin' ? 'active' : ''} type="button" onClick={() => setAuthMode('signin')}>
+              Sign in
+            </button>
+            <button className={authMode === 'signup' ? 'active' : ''} type="button" onClick={() => setAuthMode('signup')}>
+              Sign up
+            </button>
+          </div>
+          <input value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="Email" aria-label="Email" type="email" />
+          {authMode === 'signup' ? (
+            <input value={authDisplayName} onChange={(event) => setAuthDisplayName(event.target.value)} placeholder="Display name" aria-label="Display name" />
+          ) : null}
+          <input value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="Password" aria-label="Password" type="password" />
+          <button className="primary-button" type="submit" disabled={isSigning}>
+            {isSigning ? 'Working...' : authMode === 'signup' ? 'Create account' : 'Sign in'}
+          </button>
+        </form>
+      )}
+    </section>
   )
 }
 
@@ -1865,12 +2132,15 @@ function SleepView() {
 
 function SettingsView({
   creatingFamily,
+  creatingInvite,
   creatingMember,
   families,
   family,
   handleCreateFamily,
+  handleCreateInvite,
   handleCreateMember,
   handleUpdateMember,
+  latestInvite,
   memberDrafts,
   members,
   newFamilyName,
@@ -1884,12 +2154,15 @@ function SettingsView({
   updatingMember,
 }: {
   creatingFamily: boolean
+  creatingInvite: boolean
   creatingMember: boolean
   families: Family[]
   family?: Family
   handleCreateFamily: (event: FormEvent<HTMLFormElement>) => Promise<void>
+  handleCreateInvite: () => Promise<void>
   handleCreateMember: (event: FormEvent<HTMLFormElement>) => Promise<void>
   handleUpdateMember: (member: FamilyMember) => Promise<void>
+  latestInvite: FamilyInvite | null
   memberDrafts: Record<string, { name: string; color: string }>
   members: FamilyMember[]
   newFamilyName: string
@@ -1925,6 +2198,18 @@ function SettingsView({
               {creatingFamily ? 'Creating...' : 'Create family'}
             </button>
           </form>
+        </section>
+
+        <section className="settings-list">
+          <h2>Invites</h2>
+          <div className="setting-row form-setting">
+            <span>Invite code</span>
+            <strong>{latestInvite?.code ?? 'Create a code to share'}</strong>
+            <button className="primary-button" type="button" disabled={creatingInvite || !family} onClick={() => void handleCreateInvite()}>
+              {creatingInvite ? 'Creating...' : 'Create invite'}
+            </button>
+          </div>
+          {latestInvite ? <p className="settings-note">Expires {new Date(latestInvite.expiresAt).toLocaleDateString()}.</p> : null}
         </section>
 
         <section className="settings-list">

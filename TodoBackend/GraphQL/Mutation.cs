@@ -2,14 +2,67 @@ using Microsoft.EntityFrameworkCore;
 using TodoBackend.Data;
 using TodoBackend.Models;
 using MongoDB.Bson;
+using TodoBackend.Services;
 using WorkflowTaskStatus = TodoBackend.Models.TaskStatus;
 
 namespace TodoBackend.GraphQL;
 
 public class Mutation
 {
-    public async Task<Family> CreateFamily(string name, [Service] TodoDbContext dbContext)
+    public async Task<AuthPayload> SignUp(
+        string email,
+        string displayName,
+        string password,
+        [Service] TodoDbContext dbContext)
     {
+        var normalizedEmail = NormalizeEmail(email);
+        var normalizedName = displayName.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedEmail) || string.IsNullOrWhiteSpace(normalizedName) || password.Length < 8)
+        {
+            throw new GraphQLException("Email, display name, and an 8 character password are required.");
+        }
+
+        var existingUser = await dbContext.AppUsers.FirstOrDefaultAsync(user => user.Email == normalizedEmail);
+        if (existingUser != null)
+        {
+            throw new GraphQLException("An account already exists for that email.");
+        }
+
+        var now = DateTime.UtcNow;
+        var user = new AppUser
+        {
+            Id = ObjectId.GenerateNewId().ToString(),
+            Email = normalizedEmail,
+            DisplayName = normalizedName,
+            PasswordHash = AuthService.HashPassword(password),
+            SessionToken = AuthService.CreateSessionToken(),
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        dbContext.AppUsers.Add(user);
+        await dbContext.SaveChangesAsync();
+        return new AuthPayload { User = user, Token = user.SessionToken };
+    }
+
+    public async Task<AuthPayload> SignIn(string email, string password, [Service] TodoDbContext dbContext)
+    {
+        var normalizedEmail = NormalizeEmail(email);
+        var user = await dbContext.AppUsers.FirstOrDefaultAsync(currentUser => currentUser.Email == normalizedEmail);
+        if (user == null || !AuthService.VerifyPassword(password, user.PasswordHash))
+        {
+            throw new GraphQLException("Email or password was incorrect.");
+        }
+
+        user.SessionToken = AuthService.CreateSessionToken();
+        user.UpdatedAt = DateTime.UtcNow;
+        await dbContext.SaveChangesAsync();
+        return new AuthPayload { User = user, Token = user.SessionToken };
+    }
+
+    public async Task<Family> CreateFamily(string name, [Service] TodoDbContext dbContext, [Service] AuthService authService)
+    {
+        var currentUser = await authService.RequireCurrentUserAsync(dbContext);
         var normalizedName = name.Trim();
         if (string.IsNullOrWhiteSpace(normalizedName))
         {
@@ -28,15 +81,77 @@ public class Mutation
 
         dbContext.Families.Add(family);
         await dbContext.SaveChangesAsync();
+
+        if (!currentUser.IsDemo)
+        {
+            dbContext.FamilyMemberships.Add(new FamilyMembership
+            {
+                Id = ObjectId.GenerateNewId().ToString(),
+                FamilyId = family.Id,
+                UserId = currentUser.Id,
+                Role = "Owner",
+                CreatedAt = now
+            });
+            await dbContext.SaveChangesAsync();
+        }
+
         return family;
+    }
+
+    public async Task<FamilyInvite> CreateFamilyInvite(string familyId, [Service] TodoDbContext dbContext, [Service] AuthService authService)
+    {
+        var currentUser = await authService.RequireCurrentUserAsync(dbContext);
+        await authService.RequireFamilyAccessAsync(dbContext, familyId);
+
+        var invite = new FamilyInvite
+        {
+            Id = ObjectId.GenerateNewId().ToString(),
+            FamilyId = familyId,
+            Code = CreateInviteCode(),
+            CreatedByUserId = currentUser.Id,
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddDays(14)
+        };
+
+        dbContext.FamilyInvites.Add(invite);
+        await dbContext.SaveChangesAsync();
+        return invite;
+    }
+
+    public async Task<Family> AcceptFamilyInvite(string code, [Service] TodoDbContext dbContext, [Service] AuthService authService)
+    {
+        var currentUser = await authService.RequireCurrentUserAsync(dbContext);
+        var normalizedCode = code.Trim().ToUpperInvariant();
+        var invite = await dbContext.FamilyInvites.FirstOrDefaultAsync(currentInvite => currentInvite.Code == normalizedCode);
+        if (invite == null || invite.Revoked || invite.ExpiresAt <= DateTime.UtcNow)
+        {
+            throw new GraphQLException("Invite code is invalid or expired.");
+        }
+
+        if (!currentUser.IsDemo && !await dbContext.FamilyMemberships.AnyAsync(membership => membership.UserId == currentUser.Id && membership.FamilyId == invite.FamilyId))
+        {
+            dbContext.FamilyMemberships.Add(new FamilyMembership
+            {
+                Id = ObjectId.GenerateNewId().ToString(),
+                FamilyId = invite.FamilyId,
+                UserId = currentUser.Id,
+                Role = "Member",
+                CreatedAt = DateTime.UtcNow
+            });
+            await dbContext.SaveChangesAsync();
+        }
+
+        return await dbContext.Families.FirstAsync(family => family.Id == invite.FamilyId);
     }
 
     public async Task<FamilyMember> CreateFamilyMember(
         string familyId,
         string name,
         string color,
-        [Service] TodoDbContext dbContext)
+        [Service] TodoDbContext dbContext,
+        [Service] AuthService authService)
     {
+        await authService.RequireFamilyAccessAsync(dbContext, familyId);
         var family = await dbContext.Families.FirstOrDefaultAsync(currentFamily => currentFamily.Id == familyId);
         if (family == null)
         {
@@ -65,8 +180,9 @@ public class Mutation
         return member;
     }
 
-    public async Task<bool> DeleteFamily(string familyId, [Service] TodoDbContext dbContext)
+    public async Task<bool> DeleteFamily(string familyId, [Service] TodoDbContext dbContext, [Service] AuthService authService)
     {
+        await authService.RequireFamilyAccessAsync(dbContext, familyId);
         var family = await dbContext.Families.FirstOrDefaultAsync(currentFamily => currentFamily.Id == familyId);
         if (family == null)
         {
@@ -76,10 +192,14 @@ public class Mutation
         var events = await dbContext.CalendarEvents.Where(calendarEvent => calendarEvent.FamilyId == familyId).ToListAsync();
         var members = await dbContext.FamilyMembers.Where(member => member.FamilyId == familyId).ToListAsync();
         var tasks = await dbContext.Todos.Where(task => task.BoardId == family.BoardId).ToListAsync();
+        var memberships = await dbContext.FamilyMemberships.Where(membership => membership.FamilyId == familyId).ToListAsync();
+        var invites = await dbContext.FamilyInvites.Where(invite => invite.FamilyId == familyId).ToListAsync();
 
         dbContext.CalendarEvents.RemoveRange(events);
         dbContext.FamilyMembers.RemoveRange(members);
         dbContext.Todos.RemoveRange(tasks);
+        dbContext.FamilyMemberships.RemoveRange(memberships);
+        dbContext.FamilyInvites.RemoveRange(invites);
         dbContext.Families.Remove(family);
 
         await dbContext.SaveChangesAsync();
@@ -90,13 +210,16 @@ public class Mutation
         string memberId,
         string name,
         string color,
-        [Service] TodoDbContext dbContext)
+        [Service] TodoDbContext dbContext,
+        [Service] AuthService authService)
     {
         var member = await dbContext.FamilyMembers.FirstOrDefaultAsync(currentMember => currentMember.Id == memberId);
         if (member == null)
         {
             return null;
         }
+
+        await authService.RequireFamilyAccessAsync(dbContext, member.FamilyId);
 
         var normalizedName = name.Trim();
         if (string.IsNullOrWhiteSpace(normalizedName))
@@ -119,8 +242,10 @@ public class Mutation
         DateTime startAt,
         DateTime endAt,
         string? notes,
-        [Service] TodoDbContext dbContext)
+        [Service] TodoDbContext dbContext,
+        [Service] AuthService authService)
     {
+        await authService.RequireFamilyAccessAsync(dbContext, familyId);
         await ValidateCalendarEventAsync(dbContext, familyId, memberId, title, startAt, endAt);
 
         var now = DateTime.UtcNow;
@@ -150,7 +275,8 @@ public class Mutation
         DateTime startAt,
         DateTime endAt,
         string? notes,
-        [Service] TodoDbContext dbContext)
+        [Service] TodoDbContext dbContext,
+        [Service] AuthService authService)
     {
         var calendarEvent = await dbContext.CalendarEvents.FirstOrDefaultAsync(currentEvent => currentEvent.Id == eventId);
         if (calendarEvent == null)
@@ -158,6 +284,7 @@ public class Mutation
             return null;
         }
 
+        await authService.RequireFamilyAccessAsync(dbContext, calendarEvent.FamilyId);
         await ValidateCalendarEventAsync(dbContext, calendarEvent.FamilyId, memberId, title, startAt, endAt);
 
         calendarEvent.MemberId = string.IsNullOrWhiteSpace(memberId) ? null : memberId;
@@ -172,7 +299,7 @@ public class Mutation
         return calendarEvent;
     }
 
-    public async Task<bool> DeleteCalendarEvent(string eventId, [Service] TodoDbContext dbContext)
+    public async Task<bool> DeleteCalendarEvent(string eventId, [Service] TodoDbContext dbContext, [Service] AuthService authService)
     {
         var calendarEvent = await dbContext.CalendarEvents.FirstOrDefaultAsync(currentEvent => currentEvent.Id == eventId);
         if (calendarEvent == null)
@@ -180,6 +307,7 @@ public class Mutation
             return false;
         }
 
+        await authService.RequireFamilyAccessAsync(dbContext, calendarEvent.FamilyId);
         dbContext.CalendarEvents.Remove(calendarEvent);
         await dbContext.SaveChangesAsync();
         return true;
@@ -189,6 +317,7 @@ public class Mutation
         string title,
         string assigneeName,
         [Service] TodoDbContext dbContext,
+        [Service] AuthService authService,
         string? familyId = null,
         string boardId = "family-home",
         WorkflowTaskStatus status = WorkflowTaskStatus.Todo,
@@ -202,6 +331,7 @@ public class Mutation
             throw new GraphQLException("Task title is required.");
         }
 
+        await RequireTaskFamilyAccessAsync(dbContext, authService, familyId, boardId);
         await ValidateTaskScheduleAsync(dbContext, familyId, dueAt, durationMinutes);
 
         var nextOrder = await GetNextSortOrderAsync(dbContext, boardId, status);
@@ -232,7 +362,8 @@ public class Mutation
         DateTime? dueAt,
         int? durationMinutes,
         string? recurrenceRule,
-        [Service] TodoDbContext dbContext)
+        [Service] TodoDbContext dbContext,
+        [Service] AuthService authService)
     {
         var task = await dbContext.Todos.FirstOrDefaultAsync(currentTask => currentTask.Id == taskId);
         if (task == null)
@@ -240,6 +371,7 @@ public class Mutation
             return null;
         }
 
+        await RequireTaskFamilyAccessAsync(dbContext, authService, task.FamilyId, task.BoardId);
         await ValidateTaskScheduleAsync(dbContext, task.FamilyId, dueAt, durationMinutes);
 
         task.DueAt = dueAt?.ToUniversalTime();
@@ -251,7 +383,7 @@ public class Mutation
         return task;
     }
 
-    public async Task<Todo?> ToggleTaskCompletion(string taskId, [Service] TodoDbContext dbContext)
+    public async Task<Todo?> ToggleTaskCompletion(string taskId, [Service] TodoDbContext dbContext, [Service] AuthService authService)
     {
         var task = await dbContext.Todos.FirstOrDefaultAsync(t => t.Id == taskId);
         if (task == null)
@@ -259,6 +391,7 @@ public class Mutation
             return null;
         }
 
+        await RequireTaskFamilyAccessAsync(dbContext, authService, task.FamilyId, task.BoardId);
         var sourceStatus = task.Status;
         task.Completed = !task.Completed;
         task.Status = task.Completed ? WorkflowTaskStatus.Done : WorkflowTaskStatus.Todo;
@@ -274,7 +407,8 @@ public class Mutation
         string taskId,
         WorkflowTaskStatus targetStatus,
         int targetOrder,
-        [Service] TodoDbContext dbContext)
+        [Service] TodoDbContext dbContext,
+        [Service] AuthService authService)
     {
         var task = await dbContext.Todos.FirstOrDefaultAsync(t => t.Id == taskId);
         if (task == null)
@@ -282,6 +416,7 @@ public class Mutation
             return null;
         }
 
+        await RequireTaskFamilyAccessAsync(dbContext, authService, task.FamilyId, task.BoardId);
         var sourceStatus = task.Status;
         var boardId = task.BoardId;
 
@@ -296,7 +431,7 @@ public class Mutation
         return task;
     }
 
-    public async Task<bool> DeleteTask(string taskId, [Service] TodoDbContext dbContext)
+    public async Task<bool> DeleteTask(string taskId, [Service] TodoDbContext dbContext, [Service] AuthService authService)
     {
         var task = await dbContext.Todos.FirstOrDefaultAsync(t => t.Id == taskId);
         if (task == null)
@@ -304,6 +439,7 @@ public class Mutation
             return false;
         }
 
+        await RequireTaskFamilyAccessAsync(dbContext, authService, task.FamilyId, task.BoardId);
         var boardId = task.BoardId;
         var status = task.Status;
 
@@ -422,6 +558,24 @@ public class Mutation
         }
     }
 
+    private static async Task RequireTaskFamilyAccessAsync(TodoDbContext dbContext, AuthService authService, string? familyId, string boardId)
+    {
+        if (!string.IsNullOrWhiteSpace(familyId))
+        {
+            await authService.RequireFamilyAccessAsync(dbContext, familyId);
+            return;
+        }
+
+        var family = await dbContext.Families.FirstOrDefaultAsync(currentFamily => currentFamily.BoardId == boardId);
+        if (family != null)
+        {
+            await authService.RequireFamilyAccessAsync(dbContext, family.Id);
+            return;
+        }
+
+        await authService.RequireCurrentUserAsync(dbContext);
+    }
+
     private static async Task<string> ResolveMemberToneAsync(TodoDbContext dbContext, string? memberId)
     {
         if (string.IsNullOrWhiteSpace(memberId))
@@ -451,9 +605,20 @@ public class Mutation
         return string.IsNullOrWhiteSpace(normalized) ? "#6dbec2" : normalized;
     }
 
+    private static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();
+
     private static string NormalizeRecurrenceRule(string? recurrenceRule)
     {
         var normalized = recurrenceRule?.Trim();
         return normalized is "Daily" or "Weekly" or "Monthly" ? normalized : "None";
+    }
+
+    private static string CreateInviteCode()
+    {
+        return Convert.ToBase64String(Guid.NewGuid().ToByteArray())
+            .Replace("+", string.Empty, StringComparison.Ordinal)
+            .Replace("/", string.Empty, StringComparison.Ordinal)
+            .Replace("=", string.Empty, StringComparison.Ordinal)
+            .ToUpperInvariant()[..10];
     }
 }
