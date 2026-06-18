@@ -63,6 +63,52 @@ public class Query
             .ToListAsync();
     }
 
+    public async Task<string> GetMyFamilyRole([Service] TodoDbContext context, [Service] AuthService authService, string familyId)
+    {
+        await authService.RequireFamilyAccessAsync(context, familyId);
+        return await authService.GetFamilyRoleAsync(context, familyId) ?? "Member";
+    }
+
+    public async Task<List<FamilyInvite>> GetFamilyInvites([Service] TodoDbContext context, [Service] AuthService authService, string familyId)
+    {
+        await authService.RequireFamilyOwnerAsync(context, familyId);
+        return await context.FamilyInvites
+            .Where(invite => invite.FamilyId == familyId && !invite.Revoked && invite.ExpiresAt > DateTime.UtcNow)
+            .OrderByDescending(invite => invite.CreatedAt)
+            .ToListAsync();
+    }
+
+    public async Task<List<FamilyAccountMember>> GetFamilyAccountMembers(
+        [Service] TodoDbContext context,
+        [Service] AuthService authService,
+        string familyId)
+    {
+        await authService.RequireFamilyOwnerAsync(context, familyId);
+        var memberships = await context.FamilyMemberships
+            .Where(membership => membership.FamilyId == familyId)
+            .OrderBy(membership => membership.CreatedAt)
+            .ToListAsync();
+        var userIds = memberships.Select(membership => membership.UserId).ToList();
+        var users = await context.AppUsers.Where(user => userIds.Contains(user.Id)).ToListAsync();
+        var userMap = users.ToDictionary(user => user.Id);
+
+        return memberships
+            .Where(membership => userMap.ContainsKey(membership.UserId))
+            .Select(membership =>
+            {
+                var user = userMap[membership.UserId];
+                return new FamilyAccountMember
+                {
+                    MembershipId = membership.Id,
+                    UserId = user.Id,
+                    DisplayName = user.DisplayName,
+                    Email = user.Email,
+                    Role = membership.Role
+                };
+            })
+            .ToList();
+    }
+
     public async Task<List<CalendarEvent>> GetCalendarEvents(
         [Service] TodoDbContext context,
         [Service] AuthService authService,

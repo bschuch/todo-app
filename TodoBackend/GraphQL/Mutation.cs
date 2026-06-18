@@ -101,7 +101,7 @@ public class Mutation
     public async Task<FamilyInvite> CreateFamilyInvite(string familyId, [Service] TodoDbContext dbContext, [Service] AuthService authService)
     {
         var currentUser = await authService.RequireCurrentUserAsync(dbContext);
-        await authService.RequireFamilyAccessAsync(dbContext, familyId);
+        await authService.RequireFamilyOwnerAsync(dbContext, familyId);
 
         var invite = new FamilyInvite
         {
@@ -116,6 +116,72 @@ public class Mutation
         dbContext.FamilyInvites.Add(invite);
         await dbContext.SaveChangesAsync();
         return invite;
+    }
+
+    public async Task<bool> RevokeFamilyInvite(string inviteId, [Service] TodoDbContext dbContext, [Service] AuthService authService)
+    {
+        var invite = await dbContext.FamilyInvites.FirstOrDefaultAsync(currentInvite => currentInvite.Id == inviteId);
+        if (invite == null)
+        {
+            return false;
+        }
+
+        await authService.RequireFamilyOwnerAsync(dbContext, invite.FamilyId);
+        invite.Revoked = true;
+        await dbContext.SaveChangesAsync();
+        return true;
+    }
+
+    public async Task<FamilyAccountMember?> UpdateFamilyAccountRole(
+        string membershipId,
+        string role,
+        [Service] TodoDbContext dbContext,
+        [Service] AuthService authService)
+    {
+        var membership = await dbContext.FamilyMemberships.FirstOrDefaultAsync(currentMembership => currentMembership.Id == membershipId);
+        if (membership == null)
+        {
+            return null;
+        }
+
+        await authService.RequireFamilyOwnerAsync(dbContext, membership.FamilyId);
+        var normalizedRole = NormalizeFamilyRole(role);
+        if (membership.Role == "Owner" && normalizedRole != "Owner")
+        {
+            await EnsureAnotherOwnerExistsAsync(dbContext, membership);
+        }
+
+        membership.Role = normalizedRole;
+        await dbContext.SaveChangesAsync();
+        return await BuildFamilyAccountMemberAsync(dbContext, membership);
+    }
+
+    public async Task<bool> RemoveFamilyAccountMember(
+        string membershipId,
+        [Service] TodoDbContext dbContext,
+        [Service] AuthService authService)
+    {
+        var membership = await dbContext.FamilyMemberships.FirstOrDefaultAsync(currentMembership => currentMembership.Id == membershipId);
+        if (membership == null)
+        {
+            return false;
+        }
+
+        await authService.RequireFamilyOwnerAsync(dbContext, membership.FamilyId);
+        var currentUser = await authService.RequireCurrentUserAsync(dbContext);
+        if (membership.UserId == currentUser.Id)
+        {
+            throw new GraphQLException("Owners cannot remove their own account from the family.");
+        }
+
+        if (membership.Role == "Owner")
+        {
+            await EnsureAnotherOwnerExistsAsync(dbContext, membership);
+        }
+
+        dbContext.FamilyMemberships.Remove(membership);
+        await dbContext.SaveChangesAsync();
+        return true;
     }
 
     public async Task<Family> AcceptFamilyInvite(string code, [Service] TodoDbContext dbContext, [Service] AuthService authService)
@@ -151,7 +217,7 @@ public class Mutation
         [Service] TodoDbContext dbContext,
         [Service] AuthService authService)
     {
-        await authService.RequireFamilyAccessAsync(dbContext, familyId);
+        await authService.RequireFamilyOwnerAsync(dbContext, familyId);
         var family = await dbContext.Families.FirstOrDefaultAsync(currentFamily => currentFamily.Id == familyId);
         if (family == null)
         {
@@ -182,7 +248,7 @@ public class Mutation
 
     public async Task<bool> DeleteFamily(string familyId, [Service] TodoDbContext dbContext, [Service] AuthService authService)
     {
-        await authService.RequireFamilyAccessAsync(dbContext, familyId);
+        await authService.RequireFamilyOwnerAsync(dbContext, familyId);
         var family = await dbContext.Families.FirstOrDefaultAsync(currentFamily => currentFamily.Id == familyId);
         if (family == null)
         {
@@ -219,7 +285,7 @@ public class Mutation
             return null;
         }
 
-        await authService.RequireFamilyAccessAsync(dbContext, member.FamilyId);
+        await authService.RequireFamilyOwnerAsync(dbContext, member.FamilyId);
 
         var normalizedName = name.Trim();
         if (string.IsNullOrWhiteSpace(normalizedName))
@@ -607,6 +673,9 @@ public class Mutation
 
     private static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();
 
+    private static string NormalizeFamilyRole(string role) =>
+        string.Equals(role.Trim(), "Owner", StringComparison.OrdinalIgnoreCase) ? "Owner" : "Member";
+
     private static string NormalizeRecurrenceRule(string? recurrenceRule)
     {
         var normalized = recurrenceRule?.Trim();
@@ -620,5 +689,35 @@ public class Mutation
             .Replace("/", string.Empty, StringComparison.Ordinal)
             .Replace("=", string.Empty, StringComparison.Ordinal)
             .ToUpperInvariant()[..10];
+    }
+
+    private static async Task EnsureAnotherOwnerExistsAsync(TodoDbContext dbContext, FamilyMembership membership)
+    {
+        var anotherOwnerExists = await dbContext.FamilyMemberships.AnyAsync(currentMembership =>
+            currentMembership.FamilyId == membership.FamilyId &&
+            currentMembership.Id != membership.Id &&
+            currentMembership.Role == "Owner");
+        if (!anotherOwnerExists)
+        {
+            throw new GraphQLException("A family must keep at least one owner.");
+        }
+    }
+
+    private static async Task<FamilyAccountMember?> BuildFamilyAccountMemberAsync(TodoDbContext dbContext, FamilyMembership membership)
+    {
+        var user = await dbContext.AppUsers.FirstOrDefaultAsync(currentUser => currentUser.Id == membership.UserId);
+        if (user == null)
+        {
+            return null;
+        }
+
+        return new FamilyAccountMember
+        {
+            MembershipId = membership.Id,
+            UserId = user.Id,
+            DisplayName = user.DisplayName,
+            Email = user.Email,
+            Role = membership.Role
+        };
     }
 }

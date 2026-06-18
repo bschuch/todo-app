@@ -33,7 +33,10 @@ public class AuthService
 
         if (environment.IsDevelopment())
         {
-            return new CurrentUser(DemoUserId, "demo@family.local", "Demo Family", true);
+            var demoUser = await dbContext.AppUsers.FirstOrDefaultAsync(user => user.Email == "demo@family.local");
+            return demoUser == null
+                ? new CurrentUser(DemoUserId, "demo@family.local", "Demo Family", true)
+                : new CurrentUser(demoUser.Id, demoUser.Email, demoUser.DisplayName, true);
         }
 
         return null;
@@ -65,6 +68,33 @@ public class AuthService
         if (!await CanAccessFamilyAsync(dbContext, familyId))
         {
             throw new GraphQLException("You do not have access to this family.");
+        }
+    }
+
+    public async Task<string?> GetFamilyRoleAsync(TodoDbContext dbContext, string familyId)
+    {
+        var user = await GetCurrentUserAsync(dbContext);
+        if (user == null)
+        {
+            return null;
+        }
+
+        if (user.IsDemo)
+        {
+            return "Owner";
+        }
+
+        var membership = await dbContext.FamilyMemberships.FirstOrDefaultAsync(currentMembership =>
+            currentMembership.FamilyId == familyId && currentMembership.UserId == user.Id);
+        return membership?.Role;
+    }
+
+    public async Task RequireFamilyOwnerAsync(TodoDbContext dbContext, string familyId)
+    {
+        var role = await GetFamilyRoleAsync(dbContext, familyId);
+        if (!string.Equals(role, "Owner", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new GraphQLException("Family owner permission is required.");
         }
     }
 

@@ -9,10 +9,14 @@ import App, {
   CREATE_TASK,
   GET_CALENDAR_EVENTS,
   GET_CURRENT_USER,
+  GET_FAMILY_ACCOUNT_MEMBERS,
+  GET_FAMILY_INVITES,
   GET_FAMILIES,
   GET_FAMILY_MEMBERS,
+  GET_MY_FAMILY_ROLE,
   GET_SCHEDULED_TASKS,
   GET_TASKS,
+  REVOKE_FAMILY_INVITE,
   SIGN_IN,
 } from '../App'
 
@@ -20,6 +24,13 @@ const family = { id: 'family-1', name: 'Smith Family', boardId: 'family-home' }
 const otherFamily = { id: 'family-2', name: 'Garcia Family', boardId: 'garcia-family' }
 const emma = { id: 'member-1', familyId: 'family-1', name: 'Emma', color: '#6dbec2' }
 const currentUser = { id: 'user-1', email: 'parent@example.com', displayName: 'Parent' }
+const accountMember = {
+  membershipId: 'membership-1',
+  userId: currentUser.id,
+  displayName: currentUser.displayName,
+  email: currentUser.email,
+  role: 'Owner',
+}
 
 const task = {
   id: 'task-1',
@@ -74,6 +85,18 @@ function baseMocks({ eventError = false } = {}): MockedResponse[] {
     {
       request: { query: GET_FAMILY_MEMBERS, variables: { familyId: family.id } },
       result: { data: { familyMembers: [emma] } },
+    },
+    {
+      request: { query: GET_MY_FAMILY_ROLE, variables: { familyId: family.id } },
+      result: { data: { myFamilyRole: 'Owner' } },
+    },
+    {
+      request: { query: GET_FAMILY_INVITES, variables: { familyId: family.id } },
+      result: { data: { familyInvites: [] } },
+    },
+    {
+      request: { query: GET_FAMILY_ACCOUNT_MEMBERS, variables: { familyId: family.id } },
+      result: { data: { familyAccountMembers: [accountMember] } },
     },
     eventError
       ? {
@@ -154,6 +177,12 @@ describe('App', () => {
       { request: { query: GET_CURRENT_USER }, result: { data: { currentUser } } },
       { request: { query: GET_FAMILIES }, result: { data: { families: [family] } } },
       { request: { query: GET_FAMILY_MEMBERS, variables: { familyId: family.id } }, result: { data: { familyMembers: [emma] } } },
+      { request: { query: GET_MY_FAMILY_ROLE, variables: { familyId: family.id } }, result: { data: { myFamilyRole: 'Owner' } } },
+      { request: { query: GET_FAMILY_INVITES, variables: { familyId: family.id } }, result: { data: { familyInvites: [] } } },
+      {
+        request: { query: GET_FAMILY_ACCOUNT_MEMBERS, variables: { familyId: family.id } },
+        result: { data: { familyAccountMembers: [accountMember] } },
+      },
       {
         request: { query: GET_CALENDAR_EVENTS, variables: { familyId: family.id, rangeStart: weekRange.start, rangeEnd: weekRange.end } },
         result: { data: { calendarEvents: [calendarEvent] } },
@@ -380,6 +409,18 @@ describe('App', () => {
         result: { data: { familyMembers: [] } },
       },
       {
+        request: { query: GET_MY_FAMILY_ROLE, variables: { familyId: otherFamily.id } },
+        result: { data: { myFamilyRole: 'Owner' } },
+      },
+      {
+        request: { query: GET_FAMILY_INVITES, variables: { familyId: otherFamily.id } },
+        result: { data: { familyInvites: [] } },
+      },
+      {
+        request: { query: GET_FAMILY_ACCOUNT_MEMBERS, variables: { familyId: otherFamily.id } },
+        result: { data: { familyAccountMembers: [accountMember] } },
+      },
+      {
         request: {
           query: GET_CALENDAR_EVENTS,
           variables: { familyId: otherFamily.id, rangeStart: currentRange('week').start, rangeEnd: currentRange('week').end },
@@ -417,17 +458,47 @@ describe('App', () => {
     expect(screen.getByPlaceholderText(/garcia family/i)).toBeInTheDocument()
     expect(screen.getByPlaceholderText(/avery/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /create family/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /add member/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /add profile/i })).toBeInTheDocument()
+  })
+
+  it('shows read-only family administration to members', async () => {
+    const user = userEvent.setup()
+    const mocks = baseMocks()
+    const roleMockIndex = mocks.findIndex((mock) => mock.request.query === GET_MY_FAMILY_ROLE)
+    mocks[roleMockIndex] = {
+      request: { query: GET_MY_FAMILY_ROLE, variables: { familyId: family.id } },
+      result: { data: { myFamilyRole: 'Member' } },
+    }
+    renderApp(mocks)
+
+    await screen.findByRole('heading', { name: /smith family/i })
+    await user.click(screen.getByRole('button', { name: /settings/i }))
+
+    expect(await screen.findByText(/your permission/i)).toBeInTheDocument()
+    expect(screen.getByText(/only family owners can create and revoke invitations/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /create invite/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /add profile/i })).not.toBeInTheDocument()
   })
 
   it('creates and accepts family invite codes', async () => {
     const user = userEvent.setup()
-    const invite = { id: 'invite-1', familyId: family.id, code: 'ABCD123456', expiresAt: new Date(Date.now() + 86400000).toISOString() }
+    const invite = {
+      id: 'invite-1',
+      familyId: family.id,
+      code: 'ABCD123456',
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 86400000).toISOString(),
+      revoked: false,
+    }
     renderApp([
       ...baseMocks(),
       {
         request: { query: CREATE_FAMILY_INVITE, variables: { familyId: family.id } },
         result: { data: { createFamilyInvite: invite } },
+      },
+      {
+        request: { query: GET_FAMILY_INVITES, variables: { familyId: family.id } },
+        result: { data: { familyInvites: [invite] } },
       },
       {
         request: { query: ACCEPT_FAMILY_INVITE, variables: { code: invite.code } },
@@ -444,6 +515,42 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: /join family/i }))
 
     expect(await screen.findByRole('heading', { name: /family app settings/i })).toBeInTheDocument()
+  })
+
+  it('reloads and revokes active invitation codes for owners', async () => {
+    const user = userEvent.setup()
+    const invite = {
+      id: 'invite-1',
+      familyId: family.id,
+      code: 'ABCD123456',
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 86400000).toISOString(),
+      revoked: false,
+    }
+    const mocks = baseMocks()
+    const inviteMockIndex = mocks.findIndex((mock) => mock.request.query === GET_FAMILY_INVITES)
+    mocks[inviteMockIndex] = {
+      request: { query: GET_FAMILY_INVITES, variables: { familyId: family.id } },
+      result: { data: { familyInvites: [invite] } },
+    }
+
+    renderApp([
+      ...mocks,
+      {
+        request: { query: REVOKE_FAMILY_INVITE, variables: { inviteId: invite.id } },
+        result: { data: { revokeFamilyInvite: true } },
+      },
+      {
+        request: { query: GET_FAMILY_INVITES, variables: { familyId: family.id } },
+        result: { data: { familyInvites: [] } },
+      },
+    ])
+
+    await screen.findByRole('heading', { name: /smith family/i })
+    await user.click(screen.getByRole('button', { name: /settings/i }))
+    expect(await screen.findByText(invite.code)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /revoke/i }))
+    expect(await screen.findByText(/no active invitation codes/i)).toBeInTheDocument()
   })
 
   it('opens event details with edit and delete controls', async () => {

@@ -65,7 +65,29 @@ interface FamilyInvite {
   id: string
   familyId: string
   code: string
+  createdAt: string
   expiresAt: string
+  revoked: boolean
+}
+
+interface FamilyAccountMember {
+  membershipId: string
+  userId: string
+  displayName: string
+  email: string
+  role: 'Owner' | 'Member'
+}
+
+interface FamilyRoleQueryData {
+  myFamilyRole: 'Owner' | 'Member'
+}
+
+interface FamilyInvitesQueryData {
+  familyInvites: FamilyInvite[]
+}
+
+interface FamilyAccountMembersQueryData {
+  familyAccountMembers: FamilyAccountMember[]
 }
 
 interface TasksQueryData {
@@ -194,6 +216,37 @@ export const CREATE_FAMILY_INVITE = gql`
   }
 `
 
+export const GET_MY_FAMILY_ROLE = gql`
+  query GetMyFamilyRole($familyId: String!) {
+    myFamilyRole(familyId: $familyId)
+  }
+`
+
+export const GET_FAMILY_INVITES = gql`
+  query GetFamilyInvites($familyId: String!) {
+    familyInvites(familyId: $familyId) {
+      id
+      familyId
+      code
+      createdAt
+      expiresAt
+      revoked
+    }
+  }
+`
+
+export const GET_FAMILY_ACCOUNT_MEMBERS = gql`
+  query GetFamilyAccountMembers($familyId: String!) {
+    familyAccountMembers(familyId: $familyId) {
+      membershipId
+      userId
+      displayName
+      email
+      role
+    }
+  }
+`
+
 export const ACCEPT_FAMILY_INVITE = gql`
   mutation AcceptFamilyInvite($code: String!) {
     acceptFamilyInvite(code: $code) {
@@ -201,6 +254,36 @@ export const ACCEPT_FAMILY_INVITE = gql`
       name
       boardId
     }
+  }
+`
+
+export const REVOKE_FAMILY_INVITE = gql`
+  mutation RevokeFamilyInvite($inviteId: String!) {
+    revokeFamilyInvite(inviteId: $inviteId)
+  }
+`
+
+export const UPDATE_FAMILY_ACCOUNT_ROLE = gql`
+  mutation UpdateFamilyAccountRole($membershipId: String!, $role: String!) {
+    updateFamilyAccountRole(membershipId: $membershipId, role: $role) {
+      membershipId
+      userId
+      displayName
+      email
+      role
+    }
+  }
+`
+
+export const REMOVE_FAMILY_ACCOUNT_MEMBER = gql`
+  mutation RemoveFamilyAccountMember($membershipId: String!) {
+    removeFamilyAccountMember(membershipId: $membershipId)
+  }
+`
+
+export const DELETE_FAMILY = gql`
+  mutation DeleteFamily($familyId: String!) {
+    deleteFamily(familyId: $familyId)
   }
 `
 
@@ -440,7 +523,7 @@ function App() {
   const [authDisplayName, setAuthDisplayName] = useState('')
   const [authPassword, setAuthPassword] = useState('')
   const [inviteCode, setInviteCode] = useState('')
-  const [latestInvite, setLatestInvite] = useState<FamilyInvite | null>(null)
+  const [copiedInviteId, setCopiedInviteId] = useState<string | null>(null)
   const [title, setTitle] = useState('')
   const [assigneeName, setAssigneeName] = useState('')
   const [taskScheduleForm, setTaskScheduleForm] = useState<TaskScheduleFormState>(() => createDefaultTaskScheduleForm(new Date()))
@@ -481,6 +564,31 @@ function App() {
   )
   const activeFamilyId = selectedFamily?.id ?? ''
   const activeBoardId = selectedFamily?.boardId ?? BOARD_ID
+
+  const { data: familyRoleData, refetch: refetchFamilyRole } = useQuery<FamilyRoleQueryData>(GET_MY_FAMILY_ROLE, {
+    skip: !activeFamilyId,
+    variables: { familyId: activeFamilyId },
+  })
+  const familyRole = familyRoleData?.myFamilyRole ?? 'Member'
+  const isFamilyOwner = familyRole === 'Owner'
+
+  const {
+    data: familyInvitesData,
+    refetch: refetchFamilyInvites,
+  } = useQuery<FamilyInvitesQueryData>(GET_FAMILY_INVITES, {
+    skip: !activeFamilyId || !isFamilyOwner,
+    variables: { familyId: activeFamilyId },
+  })
+  const familyInvites = familyInvitesData?.familyInvites ?? []
+
+  const {
+    data: familyAccountMembersData,
+    refetch: refetchFamilyAccountMembers,
+  } = useQuery<FamilyAccountMembersQueryData>(GET_FAMILY_ACCOUNT_MEMBERS, {
+    skip: !activeFamilyId || !isFamilyOwner,
+    variables: { familyId: activeFamilyId },
+  })
+  const familyAccountMembers = familyAccountMembersData?.familyAccountMembers ?? []
 
   useEffect(() => {
     if (!selectedFamily && families.length > 0) {
@@ -643,8 +751,35 @@ function App() {
     awaitRefetchQueries: true,
   })
 
-  const [createFamilyInvite, { loading: creatingInvite }] = useMutation(CREATE_FAMILY_INVITE)
+  const ownerRefetchQueries = activeFamilyId
+    ? [
+        { query: GET_MY_FAMILY_ROLE, variables: { familyId: activeFamilyId } },
+        { query: GET_FAMILY_INVITES, variables: { familyId: activeFamilyId } },
+        { query: GET_FAMILY_ACCOUNT_MEMBERS, variables: { familyId: activeFamilyId } },
+      ]
+    : []
+
+  const [createFamilyInvite, { loading: creatingInvite }] = useMutation(CREATE_FAMILY_INVITE, {
+    refetchQueries: activeFamilyId ? [{ query: GET_FAMILY_INVITES, variables: { familyId: activeFamilyId } }] : [],
+    awaitRefetchQueries: true,
+  })
   const [acceptFamilyInvite, { loading: acceptingInvite }] = useMutation(ACCEPT_FAMILY_INVITE, {
+    refetchQueries: [{ query: GET_FAMILIES }],
+    awaitRefetchQueries: true,
+  })
+  const [revokeFamilyInvite, { loading: revokingInvite }] = useMutation(REVOKE_FAMILY_INVITE, {
+    refetchQueries: activeFamilyId ? [{ query: GET_FAMILY_INVITES, variables: { familyId: activeFamilyId } }] : [],
+    awaitRefetchQueries: true,
+  })
+  const [updateFamilyAccountRole, { loading: updatingAccountRole }] = useMutation(UPDATE_FAMILY_ACCOUNT_ROLE, {
+    refetchQueries: ownerRefetchQueries,
+    awaitRefetchQueries: true,
+  })
+  const [removeFamilyAccountMember, { loading: removingAccountMember }] = useMutation(REMOVE_FAMILY_ACCOUNT_MEMBER, {
+    refetchQueries: ownerRefetchQueries,
+    awaitRefetchQueries: true,
+  })
+  const [deleteFamily, { loading: deletingFamily }] = useMutation(DELETE_FAMILY, {
     refetchQueries: [{ query: GET_FAMILIES }],
     awaitRefetchQueries: true,
   })
@@ -694,7 +829,12 @@ function App() {
     deletingEvent ||
     creatingFamily ||
     creatingMember ||
-    updatingMember
+    updatingMember ||
+    creatingInvite ||
+    revokingInvite ||
+    updatingAccountRole ||
+    removingAccountMember ||
+    deletingFamily
   const taskSyncError = tasksError?.message ?? null
   const authSyncError = currentUserError?.message ?? null
   const appSyncError = authSyncError ?? familyError?.message ?? membersError?.message ?? eventsError?.message ?? scheduledTasksError?.message ?? taskSyncError
@@ -889,6 +1029,11 @@ function App() {
   const retrySync = () => {
     void refetchCurrentUser()
     void refetchFamilies()
+    void refetchFamilyRole()
+    if (isFamilyOwner) {
+      void refetchFamilyInvites()
+      void refetchFamilyAccountMembers()
+    }
     void refetchMembers()
     void refetchEvents()
     void refetchScheduledTasks()
@@ -1025,8 +1170,14 @@ function App() {
             <SettingsView
               creatingFamily={creatingFamily}
               creatingMember={creatingMember}
+              copiedInviteId={copiedInviteId}
+              currentUserId={currentUser?.id ?? ''}
+              deletingFamily={deletingFamily}
               families={families}
               family={selectedFamily}
+              familyAccountMembers={familyAccountMembers}
+              familyInvites={familyInvites}
+              familyRole={familyRole}
               handleCreateFamily={handleCreateFamily}
               handleCreateMember={handleCreateMember}
               handleUpdateMember={handleUpdateMember}
@@ -1037,21 +1188,40 @@ function App() {
               newMemberName={newMemberName}
               onChangeFamily={handleSelectFamily}
               creatingInvite={creatingInvite}
-              latestInvite={latestInvite}
               handleCreateInvite={async () => {
                 if (!activeFamilyId) {
                   return
                 }
-                const result = await createFamilyInvite({ variables: { familyId: activeFamilyId } })
-                const invite = (result.data as { createFamilyInvite?: FamilyInvite } | undefined)?.createFamilyInvite
-                if (invite) {
-                  setLatestInvite(invite)
-                }
+                await createFamilyInvite({ variables: { familyId: activeFamilyId } })
               }}
+              onCopyInvite={async (invite) => {
+                await copyText(invite.code)
+                setCopiedInviteId(invite.id)
+              }}
+              onDeleteFamily={async () => {
+                if (!activeFamilyId || !window.confirm(`Delete ${selectedFamily?.name ?? 'this family'} and all of its data?`)) {
+                  return
+                }
+                await deleteFamily({ variables: { familyId: activeFamilyId } })
+                setSelectedFamilyId('')
+                localStorage.removeItem(SELECTED_FAMILY_KEY)
+              }}
+              onRemoveAccountMember={async (membershipId) => {
+                await removeFamilyAccountMember({ variables: { membershipId } })
+              }}
+              onRevokeInvite={async (inviteId) => {
+                await revokeFamilyInvite({ variables: { inviteId } })
+              }}
+              onUpdateAccountRole={async (membershipId, role) => {
+                await updateFamilyAccountRole({ variables: { membershipId, role } })
+              }}
+              removingAccountMember={removingAccountMember}
+              revokingInvite={revokingInvite}
               setMemberDrafts={setMemberDrafts}
               setNewFamilyName={setNewFamilyName}
               setNewMemberColor={setNewMemberColor}
               setNewMemberName={setNewMemberName}
+              updatingAccountRole={updatingAccountRole}
               updatingMember={updatingMember}
             />
           ) : null}
@@ -2131,50 +2301,78 @@ function SleepView() {
 }
 
 function SettingsView({
+  copiedInviteId,
   creatingFamily,
   creatingInvite,
   creatingMember,
+  currentUserId,
+  deletingFamily,
   families,
   family,
+  familyAccountMembers,
+  familyInvites,
+  familyRole,
   handleCreateFamily,
   handleCreateInvite,
   handleCreateMember,
   handleUpdateMember,
-  latestInvite,
   memberDrafts,
   members,
   newFamilyName,
   newMemberColor,
   newMemberName,
   onChangeFamily,
+  onCopyInvite,
+  onDeleteFamily,
+  onRemoveAccountMember,
+  onRevokeInvite,
+  onUpdateAccountRole,
+  removingAccountMember,
+  revokingInvite,
   setMemberDrafts,
   setNewFamilyName,
   setNewMemberColor,
   setNewMemberName,
+  updatingAccountRole,
   updatingMember,
 }: {
+  copiedInviteId: string | null
   creatingFamily: boolean
   creatingInvite: boolean
   creatingMember: boolean
+  currentUserId: string
+  deletingFamily: boolean
   families: Family[]
   family?: Family
+  familyAccountMembers: FamilyAccountMember[]
+  familyInvites: FamilyInvite[]
+  familyRole: 'Owner' | 'Member'
   handleCreateFamily: (event: FormEvent<HTMLFormElement>) => Promise<void>
   handleCreateInvite: () => Promise<void>
   handleCreateMember: (event: FormEvent<HTMLFormElement>) => Promise<void>
   handleUpdateMember: (member: FamilyMember) => Promise<void>
-  latestInvite: FamilyInvite | null
   memberDrafts: Record<string, { name: string; color: string }>
   members: FamilyMember[]
   newFamilyName: string
   newMemberColor: string
   newMemberName: string
   onChangeFamily: (familyId: string) => void
+  onCopyInvite: (invite: FamilyInvite) => Promise<void>
+  onDeleteFamily: () => Promise<void>
+  onRemoveAccountMember: (membershipId: string) => Promise<void>
+  onRevokeInvite: (inviteId: string) => Promise<void>
+  onUpdateAccountRole: (membershipId: string, role: 'Owner' | 'Member') => Promise<void>
+  removingAccountMember: boolean
+  revokingInvite: boolean
   setMemberDrafts: (updater: (current: Record<string, { name: string; color: string }>) => Record<string, { name: string; color: string }>) => void
   setNewFamilyName: (name: string) => void
   setNewMemberColor: (color: string) => void
   setNewMemberName: (name: string) => void
+  updatingAccountRole: boolean
   updatingMember: boolean
 }) {
+  const isOwner = familyRole === 'Owner'
+
   return (
     <SectionPage eyebrow="Settings" title="Family app settings">
       <div className="settings-layout">
@@ -2202,59 +2400,142 @@ function SettingsView({
 
         <section className="settings-list">
           <h2>Invites</h2>
-          <div className="setting-row form-setting">
-            <span>Invite code</span>
-            <strong>{latestInvite?.code ?? 'Create a code to share'}</strong>
-            <button className="primary-button" type="button" disabled={creatingInvite || !family} onClick={() => void handleCreateInvite()}>
-              {creatingInvite ? 'Creating...' : 'Create invite'}
-            </button>
+          <div className="setting-row">
+            <span>Your permission</span>
+            <strong>{familyRole}</strong>
           </div>
-          {latestInvite ? <p className="settings-note">Expires {new Date(latestInvite.expiresAt).toLocaleDateString()}.</p> : null}
+          {isOwner ? (
+            <div className="setting-row">
+              <span>Invite family</span>
+              <p>Create a shareable code that expires in 14 days.</p>
+              <button className="primary-button" type="button" disabled={creatingInvite || !family} onClick={() => void handleCreateInvite()}>
+                {creatingInvite ? 'Creating...' : 'Create invite'}
+              </button>
+            </div>
+          ) : (
+            <p className="settings-note">Only family owners can create and revoke invitations.</p>
+          )}
+
+          {isOwner && familyInvites.length === 0 ? <p className="settings-note">No active invitation codes.</p> : null}
+          {isOwner
+            ? familyInvites.map((invite) => (
+                <div className="invite-row" key={invite.id}>
+                  <div>
+                    <strong>{invite.code}</strong>
+                    <span>Expires {new Date(invite.expiresAt).toLocaleDateString()}</span>
+                  </div>
+                  <button className="ghost-button" type="button" onClick={() => void onCopyInvite(invite)}>
+                    {copiedInviteId === invite.id ? 'Copied' : 'Copy'}
+                  </button>
+                  <button className="delete-button" type="button" disabled={revokingInvite} onClick={() => void onRevokeInvite(invite.id)}>
+                    Revoke
+                  </button>
+                </div>
+              ))
+            : null}
         </section>
 
         <section className="settings-list">
-          <h2>Members</h2>
-          <form className="setting-row form-setting" onSubmit={(event) => void handleCreateMember(event)}>
-            <span>New member</span>
-            <input value={newMemberName} onChange={(event) => setNewMemberName(event.target.value)} placeholder="Avery" />
-            <input
-              aria-label="New member color"
-              type="color"
-              value={newMemberColor}
-              onChange={(event) => setNewMemberColor(event.target.value)}
-            />
-            <button className="primary-button" type="submit" disabled={creatingMember || !family}>
-              {creatingMember ? 'Adding...' : 'Add member'}
-            </button>
-          </form>
-
-          {members.map((member) => {
-            const draft = memberDrafts[member.id] ?? { name: member.name, color: member.color }
-            return (
-              <div className="setting-row form-setting" key={member.id}>
-                <span>Member</span>
-                <input
-                  value={draft.name}
-                  onChange={(event) =>
-                    setMemberDrafts((current) => ({ ...current, [member.id]: { ...draft, name: event.target.value } }))
-                  }
-                  aria-label={`${member.name} name`}
-                />
-                <input
-                  aria-label={`${member.name} color`}
-                  type="color"
-                  value={draft.color}
-                  onChange={(event) =>
-                    setMemberDrafts((current) => ({ ...current, [member.id]: { ...draft, color: event.target.value } }))
-                  }
-                />
-                <button className="ghost-button" type="button" disabled={updatingMember} onClick={() => void handleUpdateMember(member)}>
-                  Save
+          <h2>Account access</h2>
+          {isOwner ? (
+            familyAccountMembers.map((accountMember) => (
+              <div className="account-member-row" key={accountMember.membershipId}>
+                <div>
+                  <strong>{accountMember.displayName}</strong>
+                  <span>{accountMember.email}{accountMember.userId === currentUserId ? ' (you)' : ''}</span>
+                </div>
+                <select
+                  aria-label={`${accountMember.displayName} role`}
+                  value={accountMember.role}
+                  disabled={updatingAccountRole}
+                  onChange={(event) => void onUpdateAccountRole(accountMember.membershipId, event.target.value as 'Owner' | 'Member')}
+                >
+                  <option value="Owner">Owner</option>
+                  <option value="Member">Member</option>
+                </select>
+                <button
+                  className="delete-button"
+                  type="button"
+                  disabled={removingAccountMember || accountMember.userId === currentUserId}
+                  onClick={() => void onRemoveAccountMember(accountMember.membershipId)}
+                >
+                  Remove
                 </button>
               </div>
-            )
-          })}
+            ))
+          ) : (
+            <p className="settings-note">Members can use calendars and chores. Owners manage account access and family settings.</p>
+          )}
         </section>
+
+        <section className="settings-list">
+          <h2>Family profiles</h2>
+          {isOwner ? (
+            <>
+              <form className="setting-row form-setting" onSubmit={(event) => void handleCreateMember(event)}>
+                <span>New profile</span>
+                <input value={newMemberName} onChange={(event) => setNewMemberName(event.target.value)} placeholder="Avery" />
+                <input
+                  aria-label="New member color"
+                  type="color"
+                  value={newMemberColor}
+                  onChange={(event) => setNewMemberColor(event.target.value)}
+                />
+                <button className="primary-button" type="submit" disabled={creatingMember || !family}>
+                  {creatingMember ? 'Adding...' : 'Add profile'}
+                </button>
+              </form>
+
+              {members.map((member) => {
+                const draft = memberDrafts[member.id] ?? { name: member.name, color: member.color }
+                return (
+                  <div className="setting-row form-setting" key={member.id}>
+                    <span>Profile</span>
+                    <input
+                      value={draft.name}
+                      onChange={(event) =>
+                        setMemberDrafts((current) => ({ ...current, [member.id]: { ...draft, name: event.target.value } }))
+                      }
+                      aria-label={`${member.name} name`}
+                    />
+                    <input
+                      aria-label={`${member.name} color`}
+                      type="color"
+                      value={draft.color}
+                      onChange={(event) =>
+                        setMemberDrafts((current) => ({ ...current, [member.id]: { ...draft, color: event.target.value } }))
+                      }
+                    />
+                    <button className="ghost-button" type="button" disabled={updatingMember} onClick={() => void handleUpdateMember(member)}>
+                      Save
+                    </button>
+                  </div>
+                )
+              })}
+            </>
+          ) : (
+            <div className="profile-summary">
+              {members.map((member) => (
+                <span className="person-chip" key={member.id} style={{ '--chip-color': member.color } as CSSProperties}>
+                  {member.name}
+                </span>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {isOwner ? (
+          <section className="settings-list danger-settings">
+            <h2>Danger zone</h2>
+            <div className="setting-row">
+              <span>Delete family</span>
+              <p>Deletes events, chores, invitations, profiles, and account memberships.</p>
+              <button className="delete-button" type="button" disabled={deletingFamily} onClick={() => void onDeleteFamily()}>
+                {deletingFamily ? 'Deleting...' : 'Delete family'}
+              </button>
+            </div>
+          </section>
+        ) : null}
       </div>
     </SectionPage>
   )
@@ -2498,6 +2779,22 @@ function formatTimeInput(date: Date) {
 
 function buildDateTime(date: string, time: string) {
   return new Date(`${date}T${time}:00`)
+}
+
+async function copyText(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value)
+    return
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  document.execCommand('copy')
+  textarea.remove()
 }
 
 export default App

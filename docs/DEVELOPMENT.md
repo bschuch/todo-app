@@ -49,6 +49,9 @@ The backend allows private LAN origins on ports `5173` and `5174` only in Develo
 - Production requires a signed-in user.
 - Families are only returned to users with a `FamilyMembership`.
 - Invite codes can be created from Settings and accepted from the access bar.
+- Owners manage invite codes, account roles, removals, family profiles, and family deletion.
+- Members can use calendars and chores but cannot administer family access.
+- Active invite codes are reusable until revoked or their 14-day expiration.
 
 ## Verification
 
