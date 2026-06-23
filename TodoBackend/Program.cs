@@ -178,9 +178,11 @@ static CalendarEvent CreateSeedEvent(string familyId, string? memberId, string t
         Id = ObjectId.GenerateNewId().ToString(),
         FamilyId = familyId,
         MemberId = memberId,
+        MemberIds = string.IsNullOrWhiteSpace(memberId) ? new List<string>() : new List<string> { memberId },
         Title = title,
         StartAt = startAt,
         EndAt = startAt.AddMinutes(durationMinutes),
+        IsAllDay = false,
         Tone = tone,
         CreatedAt = DateTime.UtcNow,
         UpdatedAt = DateTime.UtcNow

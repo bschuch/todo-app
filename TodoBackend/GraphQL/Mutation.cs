@@ -304,27 +304,32 @@ public class Mutation
     public async Task<CalendarEvent> CreateCalendarEvent(
         string familyId,
         string? memberId,
+        List<string>? memberIds,
         string title,
         DateTime startAt,
         DateTime endAt,
+        bool isAllDay,
         string? notes,
         [Service] TodoDbContext dbContext,
         [Service] AuthService authService)
     {
         await authService.RequireFamilyAccessAsync(dbContext, familyId);
-        await ValidateCalendarEventAsync(dbContext, familyId, memberId, title, startAt, endAt);
+        var normalizedMemberIds = NormalizeEventMemberIds(memberId, memberIds);
+        await ValidateCalendarEventAsync(dbContext, familyId, normalizedMemberIds, title, startAt, endAt);
 
         var now = DateTime.UtcNow;
         var calendarEvent = new CalendarEvent
         {
             Id = ObjectId.GenerateNewId().ToString(),
             FamilyId = familyId,
-            MemberId = string.IsNullOrWhiteSpace(memberId) ? null : memberId,
+            MemberId = normalizedMemberIds.FirstOrDefault(),
+            MemberIds = normalizedMemberIds,
             Title = title.Trim(),
             StartAt = startAt.ToUniversalTime(),
             EndAt = endAt.ToUniversalTime(),
+            IsAllDay = isAllDay,
             Notes = notes?.Trim() ?? string.Empty,
-            Tone = await ResolveMemberToneAsync(dbContext, memberId),
+            Tone = await ResolveMemberToneAsync(dbContext, normalizedMemberIds.FirstOrDefault()),
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -337,9 +342,11 @@ public class Mutation
     public async Task<CalendarEvent?> UpdateCalendarEvent(
         string eventId,
         string? memberId,
+        List<string>? memberIds,
         string title,
         DateTime startAt,
         DateTime endAt,
+        bool isAllDay,
         string? notes,
         [Service] TodoDbContext dbContext,
         [Service] AuthService authService)
@@ -351,14 +358,17 @@ public class Mutation
         }
 
         await authService.RequireFamilyAccessAsync(dbContext, calendarEvent.FamilyId);
-        await ValidateCalendarEventAsync(dbContext, calendarEvent.FamilyId, memberId, title, startAt, endAt);
+        var normalizedMemberIds = NormalizeEventMemberIds(memberId, memberIds);
+        await ValidateCalendarEventAsync(dbContext, calendarEvent.FamilyId, normalizedMemberIds, title, startAt, endAt);
 
-        calendarEvent.MemberId = string.IsNullOrWhiteSpace(memberId) ? null : memberId;
+        calendarEvent.MemberId = normalizedMemberIds.FirstOrDefault();
+        calendarEvent.MemberIds = normalizedMemberIds;
         calendarEvent.Title = title.Trim();
         calendarEvent.StartAt = startAt.ToUniversalTime();
         calendarEvent.EndAt = endAt.ToUniversalTime();
+        calendarEvent.IsAllDay = isAllDay;
         calendarEvent.Notes = notes?.Trim() ?? string.Empty;
-        calendarEvent.Tone = await ResolveMemberToneAsync(dbContext, memberId);
+        calendarEvent.Tone = await ResolveMemberToneAsync(dbContext, normalizedMemberIds.FirstOrDefault());
         calendarEvent.UpdatedAt = DateTime.UtcNow;
 
         await dbContext.SaveChangesAsync();
@@ -566,7 +576,7 @@ public class Mutation
     private static async Task ValidateCalendarEventAsync(
         TodoDbContext dbContext,
         string familyId,
-        string? memberId,
+        List<string> memberIds,
         string title,
         DateTime startAt,
         DateTime endAt)
@@ -587,14 +597,24 @@ public class Mutation
             throw new GraphQLException("Family was not found.");
         }
 
-        if (!string.IsNullOrWhiteSpace(memberId))
+        if (memberIds.Count > 0)
         {
-            var memberExists = await dbContext.FamilyMembers.AnyAsync(member => member.Id == memberId && member.FamilyId == familyId);
-            if (!memberExists)
+            var matchingMemberCount = await dbContext.FamilyMembers.CountAsync(member => memberIds.Contains(member.Id) && member.FamilyId == familyId);
+            if (matchingMemberCount != memberIds.Count)
             {
-                throw new GraphQLException("Member was not found for this family.");
+                throw new GraphQLException("One or more members were not found for this family.");
             }
         }
+    }
+
+    private static List<string> NormalizeEventMemberIds(string? memberId, List<string>? memberIds)
+    {
+        var selectedMemberIds = memberIds ?? (string.IsNullOrWhiteSpace(memberId) ? new List<string>() : new List<string> { memberId });
+        return selectedMemberIds
+            .Select(currentMemberId => currentMemberId.Trim())
+            .Where(currentMemberId => !string.IsNullOrWhiteSpace(currentMemberId))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
     }
 
     private static async Task ValidateTaskScheduleAsync(TodoDbContext dbContext, string? familyId, DateTime? dueAt, int? durationMinutes)

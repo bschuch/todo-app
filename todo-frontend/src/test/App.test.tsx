@@ -6,6 +6,7 @@ import App, {
   ACCEPT_FAMILY_INVITE,
   CREATE_CALENDAR_EVENT,
   CREATE_FAMILY_INVITE,
+  CREATE_FAMILY_MEMBER,
   CREATE_TASK,
   GET_CALENDAR_EVENTS,
   GET_CURRENT_USER,
@@ -23,6 +24,7 @@ import App, {
 const family = { id: 'family-1', name: 'Smith Family', boardId: 'family-home' }
 const otherFamily = { id: 'family-2', name: 'Garcia Family', boardId: 'garcia-family' }
 const emma = { id: 'member-1', familyId: 'family-1', name: 'Emma', color: '#6dbec2' }
+const dad = { id: 'member-2', familyId: 'family-1', name: 'Dad', color: '#d67268' }
 const currentUser = { id: 'user-1', email: 'parent@example.com', displayName: 'Parent' }
 const accountMember = {
   membershipId: 'membership-1',
@@ -50,9 +52,11 @@ const calendarEvent = {
   id: 'event-1',
   familyId: 'family-1',
   memberId: 'member-1',
+  memberIds: ['member-1'],
   title: 'Grocery Run',
   startAt: buildDateTime(new Date(), '10:00').toISOString(),
   endAt: buildDateTime(new Date(), '11:00').toISOString(),
+  isAllDay: false,
   notes: 'Bring coupons',
   tone: '#6dbec2',
 }
@@ -84,7 +88,7 @@ function baseMocks({ eventError = false } = {}): MockedResponse[] {
     },
     {
       request: { query: GET_FAMILY_MEMBERS, variables: { familyId: family.id } },
-      result: { data: { familyMembers: [emma] } },
+      result: { data: { familyMembers: [emma, dad] } },
     },
     {
       request: { query: GET_MY_FAMILY_ROLE, variables: { familyId: family.id } },
@@ -154,9 +158,9 @@ describe('App', () => {
     const nav = screen.getByRole('navigation')
     expect(within(nav).getByRole('button', { name: /calendar/i })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('button', { name: 'Week' })).toHaveClass('active')
-    expect(await screen.findByText('Grocery Run')).toBeInTheDocument()
-    expect(screen.getByText('Clean room')).toBeInTheDocument()
-    expect(screen.getByText(/sat/i)).toBeInTheDocument()
+    expect((await screen.findAllByText('Grocery Run')).length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Clean room').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/sat/i).length).toBeGreaterThan(0)
   })
 
   it('renders sign-in access and submits credentials', async () => {
@@ -238,8 +242,11 @@ describe('App', () => {
       ...calendarEvent,
       id: 'event-2',
       title: 'Piano Lesson',
+      memberId: null,
+      memberIds: [],
       startAt: buildDateTime(new Date(), '09:00').toISOString(),
       endAt: buildDateTime(new Date(), '10:00').toISOString(),
+      isAllDay: false,
       notes: '',
     }
 
@@ -250,10 +257,12 @@ describe('App', () => {
           query: CREATE_CALENDAR_EVENT,
           variables: {
             familyId: family.id,
-            memberId: emma.id,
+            memberId: null,
+            memberIds: [],
             title: 'Piano Lesson',
             startAt: newEvent.startAt,
             endAt: newEvent.endAt,
+            isAllDay: false,
             notes: '',
           },
         },
@@ -275,7 +284,7 @@ describe('App', () => {
     await user.type(screen.getByPlaceholderText(/guitar lesson/i), 'Piano Lesson')
     await user.click(screen.getByRole('button', { name: /create event/i }))
 
-    expect(await screen.findByText('Piano Lesson')).toBeInTheDocument()
+    expect((await screen.findAllByText('Piano Lesson')).length).toBeGreaterThan(0)
   })
 
   it('shows a newly-created event after switching to month view', async () => {
@@ -286,8 +295,11 @@ describe('App', () => {
       ...calendarEvent,
       id: 'event-2',
       title: 'Piano Lesson',
+      memberId: null,
+      memberIds: [],
       startAt: buildDateTime(new Date(), '09:00').toISOString(),
       endAt: buildDateTime(new Date(), '10:00').toISOString(),
+      isAllDay: false,
       notes: '',
     }
 
@@ -298,10 +310,12 @@ describe('App', () => {
           query: CREATE_CALENDAR_EVENT,
           variables: {
             familyId: family.id,
-            memberId: emma.id,
+            memberId: null,
+            memberIds: [],
             title: 'Piano Lesson',
             startAt: newEvent.startAt,
             endAt: newEvent.endAt,
+            isAllDay: false,
             notes: '',
           },
         },
@@ -334,11 +348,142 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: /add calendar event/i }))
     await user.type(screen.getByPlaceholderText(/guitar lesson/i), 'Piano Lesson')
     await user.click(screen.getByRole('button', { name: /create event/i }))
-    await screen.findByText('Piano Lesson')
+    await screen.findAllByText('Piano Lesson')
     await user.click(screen.getByRole('button', { name: 'Month' }))
 
     expect(await screen.findByRole('region', { name: /month calendar/i })).toBeInTheDocument()
     expect(await screen.findAllByText('Piano Lesson')).not.toHaveLength(0)
+  })
+
+  it('creates an all-day multi-day event and shows it in month view', async () => {
+    const user = userEvent.setup()
+    const weekRange = currentRange('week')
+    const monthRange = currentRange('month')
+    const startDate = formatDateInput(new Date())
+    const endDate = formatDateInput(addDays(new Date(), 2))
+    const vacationEvent = {
+      ...calendarEvent,
+      id: 'event-vacation',
+      memberId: null,
+      memberIds: [],
+      title: 'Beach Vacation',
+      startAt: buildDateTime(new Date(), '00:00').toISOString(),
+      endAt: buildDateTime(addDays(new Date(), 3), '00:00').toISOString(),
+      isAllDay: true,
+      notes: '',
+    }
+
+    renderApp([
+      ...baseMocks(),
+      {
+        request: {
+          query: CREATE_CALENDAR_EVENT,
+          variables: {
+            familyId: family.id,
+            memberId: null,
+            memberIds: [],
+            title: 'Beach Vacation',
+            startAt: vacationEvent.startAt,
+            endAt: vacationEvent.endAt,
+            isAllDay: true,
+            notes: '',
+          },
+        },
+        result: { data: { createCalendarEvent: vacationEvent } },
+      },
+      {
+        request: {
+          query: GET_CALENDAR_EVENTS,
+          variables: { familyId: family.id, rangeStart: weekRange.start, rangeEnd: weekRange.end },
+        },
+        result: { data: { calendarEvents: [calendarEvent, vacationEvent] } },
+      },
+      {
+        request: {
+          query: GET_CALENDAR_EVENTS,
+          variables: { familyId: family.id, rangeStart: monthRange.start, rangeEnd: monthRange.end },
+        },
+        result: { data: { calendarEvents: [calendarEvent, vacationEvent] } },
+      },
+      {
+        request: {
+          query: GET_SCHEDULED_TASKS,
+          variables: { familyId: family.id, rangeStart: monthRange.start, rangeEnd: monthRange.end },
+        },
+        result: { data: { scheduledTasks: [] } },
+      },
+    ])
+
+    await screen.findByRole('heading', { name: /smith family/i })
+    await user.click(screen.getByRole('button', { name: /add calendar event/i }))
+    const dialog = await screen.findByRole('dialog', { name: /new calendar event/i })
+    await user.type(within(dialog).getByPlaceholderText(/guitar lesson/i), 'Beach Vacation')
+    await user.clear(within(dialog).getByLabelText(/end date/i))
+    await user.type(within(dialog).getByLabelText(/end date/i), endDate)
+    expect(within(dialog).getByLabelText(/start date/i)).toHaveValue(startDate)
+    await user.click(within(dialog).getByLabelText(/all day/i))
+    expect(within(dialog).queryByLabelText(/^start$/i)).not.toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: /create event/i }))
+    expect((await screen.findAllByText('Beach Vacation')).length).toBeGreaterThan(0)
+    await user.click(screen.getByRole('button', { name: 'Month' }))
+    expect(await screen.findByRole('region', { name: /month calendar/i })).toBeInTheDocument()
+    expect(await screen.findAllByText('Beach Vacation')).not.toHaveLength(0)
+  })
+
+  it('selects multiple event members and auto-adjusts end time', async () => {
+    const user = userEvent.setup()
+    const weekRange = currentRange('week')
+    const dateNightEvent = {
+      ...calendarEvent,
+      id: 'event-date-night',
+      memberId: emma.id,
+      memberIds: [emma.id, dad.id],
+      title: 'Date Night',
+      startAt: buildDateTime(new Date(), '13:30').toISOString(),
+      endAt: buildDateTime(new Date(), '14:30').toISOString(),
+      isAllDay: false,
+      notes: '',
+    }
+
+    renderApp([
+      ...baseMocks(),
+      {
+        request: {
+          query: CREATE_CALENDAR_EVENT,
+          variables: {
+            familyId: family.id,
+            memberId: emma.id,
+            memberIds: [emma.id, dad.id],
+            title: 'Date Night',
+            startAt: dateNightEvent.startAt,
+            endAt: dateNightEvent.endAt,
+            isAllDay: false,
+            notes: '',
+          },
+        },
+        result: { data: { createCalendarEvent: dateNightEvent } },
+      },
+      {
+        request: {
+          query: GET_CALENDAR_EVENTS,
+          variables: { familyId: family.id, rangeStart: weekRange.start, rangeEnd: weekRange.end },
+        },
+        result: { data: { calendarEvents: [calendarEvent, dateNightEvent] } },
+      },
+    ])
+
+    await screen.findByRole('heading', { name: /smith family/i })
+    await user.click(screen.getByRole('button', { name: /add calendar event/i }))
+    const dialog = await screen.findByRole('dialog', { name: /new calendar event/i })
+    await user.type(within(dialog).getByPlaceholderText(/guitar lesson/i), 'Date Night')
+    await user.clear(within(dialog).getByLabelText(/^start$/i))
+    await user.type(within(dialog).getByLabelText(/^start$/i), '13:30')
+    expect(within(dialog).getByLabelText(/^end$/i)).toHaveValue('14:30')
+    await user.click(within(dialog).getByRole('checkbox', { name: /emma/i }))
+    await user.click(within(dialog).getByRole('checkbox', { name: /dad/i }))
+    await user.click(within(dialog).getByRole('button', { name: /create event/i }))
+
+    expect((await screen.findAllByText('Date Night')).length).toBeGreaterThan(0)
   })
 
   it('creates a scheduled chore and shows it on the calendar', async () => {
@@ -394,10 +539,10 @@ describe('App', () => {
     await user.selectOptions(screen.getByLabelText('Assignee'), emma.name)
     await user.type(screen.getByLabelText('Chore date'), taskDate)
     await user.click(screen.getByRole('button', { name: /^add$/i }))
-    await screen.findByText('Water plants')
+    await screen.findAllByText('Water plants')
     await user.click(screen.getByRole('button', { name: /calendar/i }))
 
-    expect(await screen.findByText('Water plants')).toBeInTheDocument()
+    expect((await screen.findAllByText('Water plants')).length).toBeGreaterThan(0)
   })
 
   it('switches active family from the header', async () => {
@@ -459,6 +604,30 @@ describe('App', () => {
     expect(screen.getByPlaceholderText(/avery/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /create family/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /add profile/i })).toBeInTheDocument()
+  })
+
+  it('adds a new family member without requiring a refresh', async () => {
+    const user = userEvent.setup()
+    const avery = { id: 'member-3', familyId: family.id, name: 'Avery', color: '#6dbec2' }
+
+    renderApp([
+      ...baseMocks(),
+      {
+        request: { query: CREATE_FAMILY_MEMBER, variables: { familyId: family.id, name: 'Avery', color: '#6dbec2' } },
+        result: { data: { createFamilyMember: avery } },
+      },
+      {
+        request: { query: GET_FAMILY_MEMBERS, variables: { familyId: family.id } },
+        result: { data: { familyMembers: [emma, dad, avery] } },
+      },
+    ])
+
+    await screen.findByRole('heading', { name: /smith family/i })
+    await user.click(screen.getByRole('button', { name: /settings/i }))
+    await user.type(await screen.findByPlaceholderText(/avery/i), 'Avery')
+    await user.click(screen.getByRole('button', { name: /add profile/i }))
+
+    expect(await screen.findByLabelText(/avery name/i)).toBeInTheDocument()
   })
 
   it('shows read-only family administration to members', async () => {
@@ -558,7 +727,7 @@ describe('App', () => {
     renderApp()
 
     await screen.findByRole('heading', { name: /smith family/i })
-    await user.click(await screen.findByText('Grocery Run'))
+    await user.click((await screen.findAllByText('Grocery Run'))[0])
 
     expect(await screen.findByRole('dialog', { name: /edit calendar event/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /save changes/i })).toBeInTheDocument()

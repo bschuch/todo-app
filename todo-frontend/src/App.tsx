@@ -54,9 +54,11 @@ interface CalendarEvent {
   id: string
   familyId: string
   memberId?: string | null
+  memberIds?: string[] | null
   title: string
   startAt: string
   endAt: string
+  isAllDay?: boolean | null
   notes: string
   tone: string
 }
@@ -120,10 +122,13 @@ interface MemberSummary {
 
 interface EventFormState {
   title: string
-  date: string
+  startDate: string
+  endDate: string
   startTime: string
   endTime: string
-  memberId: string
+  memberIds: string[]
+  isWholeFamily: boolean
+  isAllDay: boolean
   notes: string
 }
 
@@ -304,9 +309,11 @@ export const GET_CALENDAR_EVENTS = gql`
       id
       familyId
       memberId
+      memberIds
       title
       startAt
       endAt
+      isAllDay
       notes
       tone
     }
@@ -359,7 +366,7 @@ const CREATE_FAMILY = gql`
   }
 `
 
-const CREATE_FAMILY_MEMBER = gql`
+export const CREATE_FAMILY_MEMBER = gql`
   mutation CreateFamilyMember($familyId: String!, $name: String!, $color: String!) {
     createFamilyMember(familyId: $familyId, name: $name, color: $color) {
       id
@@ -385,25 +392,31 @@ export const CREATE_CALENDAR_EVENT = gql`
   mutation CreateCalendarEvent(
     $familyId: String!
     $memberId: String
+    $memberIds: [String!]
     $title: String!
     $startAt: DateTime!
     $endAt: DateTime!
+    $isAllDay: Boolean!
     $notes: String
   ) {
     createCalendarEvent(
       familyId: $familyId
       memberId: $memberId
+      memberIds: $memberIds
       title: $title
       startAt: $startAt
       endAt: $endAt
+      isAllDay: $isAllDay
       notes: $notes
     ) {
       id
       familyId
       memberId
+      memberIds
       title
       startAt
       endAt
+      isAllDay
       notes
       tone
     }
@@ -414,25 +427,31 @@ const UPDATE_CALENDAR_EVENT = gql`
   mutation UpdateCalendarEvent(
     $eventId: String!
     $memberId: String
+    $memberIds: [String!]
     $title: String!
     $startAt: DateTime!
     $endAt: DateTime!
+    $isAllDay: Boolean!
     $notes: String
   ) {
     updateCalendarEvent(
       eventId: $eventId
       memberId: $memberId
+      memberIds: $memberIds
       title: $title
       startAt: $startAt
       endAt: $endAt
+      isAllDay: $isAllDay
       notes: $notes
     ) {
       id
       familyId
       memberId
+      memberIds
       title
       startAt
       endAt
+      isAllDay
       notes
       tone
     }
@@ -659,7 +678,6 @@ function App() {
   useEffect(() => {
     if (members.length > 0) {
       setAssigneeName((current) => current || members[0].name)
-      setEventForm((current) => ({ ...current, memberId: current.memberId || members[0].id }))
       setMemberDrafts((current) => {
         const next = { ...current }
         members.forEach((member) => {
@@ -743,7 +761,28 @@ function App() {
 
   const [createFamilyMember, { loading: creatingMember }] = useMutation(CREATE_FAMILY_MEMBER, {
     refetchQueries: activeFamilyId ? [{ query: GET_FAMILY_MEMBERS, variables: { familyId: activeFamilyId } }] : [],
-    awaitRefetchQueries: true,
+    update(cache, { data }) {
+      const createdMember = (data as { createFamilyMember?: FamilyMember } | undefined)?.createFamilyMember
+      if (!activeFamilyId || !createdMember) {
+        return
+      }
+
+      const variables = { familyId: activeFamilyId }
+      const currentMembers = cache.readQuery<FamilyMembersQueryData>({
+        query: GET_FAMILY_MEMBERS,
+        variables,
+      })
+
+      if (!currentMembers || currentMembers.familyMembers.some((member) => member.id === createdMember.id)) {
+        return
+      }
+
+      cache.writeQuery<FamilyMembersQueryData>({
+        query: GET_FAMILY_MEMBERS,
+        variables,
+        data: { familyMembers: [...currentMembers.familyMembers, createdMember] },
+      })
+    },
   })
 
   const [updateFamilyMember, { loading: updatingMember }] = useMutation(UPDATE_FAMILY_MEMBER, {
@@ -924,7 +963,7 @@ function App() {
 
   const handleOpenNewEvent = (date = anchorDate) => {
     setEditingEvent(null)
-    setEventForm(createDefaultEventForm(date, members[0]?.id))
+    setEventForm(createDefaultEventForm(date))
     setIsEventModalOpen(true)
   }
 
@@ -940,11 +979,17 @@ function App() {
       return
     }
 
+    const memberIds = eventForm.isWholeFamily ? [] : eventForm.memberIds
+    const startAt = eventForm.isAllDay ? buildDateTime(eventForm.startDate, '00:00') : buildDateTime(eventForm.startDate, eventForm.startTime)
+    const endAt = eventForm.isAllDay ? addDays(buildDateTime(eventForm.endDate, '00:00'), 1) : buildDateTime(eventForm.endDate, eventForm.endTime)
+
     const variables = {
-      memberId: eventForm.memberId || null,
+      memberId: memberIds[0] ?? null,
+      memberIds,
       title: eventForm.title,
-      startAt: buildDateTime(eventForm.date, eventForm.startTime).toISOString(),
-      endAt: buildDateTime(eventForm.date, eventForm.endTime).toISOString(),
+      startAt: startAt.toISOString(),
+      endAt: endAt.toISOString(),
+      isAllDay: eventForm.isAllDay,
       notes: eventForm.notes,
     }
 
@@ -1576,94 +1621,217 @@ function WeekCalendar({
   weekDays: Date[]
 }) {
   const unscheduledTasks = tasks.filter((task) => !task.dueAt)
+  const allDaySegments = getWeekAllDaySegments(events, weekDays)
 
   return (
-    <section className="calendar-board">
-      <div className="calendar-day-header spacer" />
-      {weekDays.map((day) => (
-        <div className="calendar-day-header" key={day.toISOString()}>
-          {formatWeekdayLabel(day)}
-        </div>
-      ))}
+    <>
+      <section className="calendar-board desktop-week-board">
+        <div className="calendar-day-header spacer" />
+        {weekDays.map((day) => (
+          <div className="calendar-day-header" key={day.toISOString()}>
+            {formatWeekdayLabel(day)}
+          </div>
+        ))}
 
-      <div className="time-label all-day-label">All day</div>
-      {weekDays.map((day, dayIndex) => (
-        <div className="all-day-cell" key={day.toISOString()}>
-          {dayIndex === 0
-            ? unscheduledTasks.slice(0, 2).map((task) => (
-                <button className="all-day-pill task-pill" key={task.id} type="button" onClick={() => onOpenTask(task)}>
-                  {task.title}
+        <div className="time-label all-day-label">All day</div>
+        <div className="all-day-lane">
+          {weekDays.map((day, dayIndex) => (
+            <div className="all-day-cell" key={day.toISOString()}>
+              {dayIndex === 0
+                ? unscheduledTasks.slice(0, 2).map((task) => (
+                    <button className="all-day-pill task-pill" key={task.id} type="button" onClick={() => onOpenTask(task)}>
+                      {task.title}
+                    </button>
+                  ))
+                : null}
+            </div>
+          ))}
+          {allDaySegments.map(({ event, span, startIndex }) => {
+            const eventMembers = getEventMembers(event, memberMap)
+            return (
+              <button
+                className="all-day-pill event-span-pill"
+                key={event.id}
+                style={{
+                  gridColumn: `${startIndex + 1} / span ${span}`,
+                  '--event-color': getEventColor(event, eventMembers),
+                } as CSSProperties}
+                type="button"
+                onClick={() => onOpenEvent(event)}
+              >
+                {event.title}
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="calendar-grid">
+          <div className="time-column">
+            {TIME_SLOTS.map((hour) => (
+              <div className="time-row-label" key={hour}>
+                {formatHour(hour)}
+              </div>
+            ))}
+          </div>
+
+          <div className="event-grid">
+            {weekDays.map((day) => (
+              <div className="day-column" key={day.toISOString()}>
+                {TIME_SLOTS.map((hour) => (
+                  <div className="hour-line" key={hour} />
+                ))}
+              </div>
+            ))}
+
+            {events
+              .filter((event) => isTimedSingleDayEvent(event) && getWeekdayIndex(new Date(event.startAt), weekDays) >= 0)
+              .map((event) => {
+                const eventMembers = getEventMembers(event, memberMap)
+                return (
+                  <button
+                    className="calendar-event"
+                    key={event.id}
+                    style={{
+                      ...getEventStyle(event, weekDays),
+                      '--event-color': getEventColor(event, eventMembers),
+                      '--chip-color': getEventColor(event, eventMembers),
+                    } as CSSProperties}
+                    type="button"
+                    onClick={() => onOpenEvent(event)}
+                  >
+                    <strong>{event.title}</strong>
+                    <span>
+                      {formatEventTime(event.startAt)} - {formatEventTime(event.endAt)}
+                    </span>
+                    <ParticipantDots members={eventMembers} fallback="F" />
+                  </button>
+                )
+              })}
+
+            {scheduledTasks
+              .filter((task) => task.dueAt && getWeekdayIndex(new Date(task.dueAt), weekDays) >= 0)
+              .map((task) => (
+                <button
+                  className={`calendar-event chore-event ${task.completed ? 'is-complete' : ''}`}
+                  key={task.id}
+                  style={{
+                    ...getTaskStyle(task, weekDays),
+                    '--event-color': taskColorMap[task.assigneeName || 'Unassigned'] ?? '#cfe6ef',
+                    '--chip-color': taskColorMap[task.assigneeName || 'Unassigned'] ?? '#8fbcc0',
+                  } as CSSProperties}
+                  type="button"
+                  onClick={() => onOpenTask(task)}
+                >
+                  <strong>{task.title}</strong>
+                  <span>{formatTaskTime(task)}</span>
+                  <em>{task.assigneeName.charAt(0).toUpperCase() || 'C'}</em>
                 </button>
-              ))
-            : null}
-        </div>
-      ))}
-
-      <div className="calendar-grid">
-        <div className="time-column">
-          {TIME_SLOTS.map((hour) => (
-            <div className="time-row-label" key={hour}>
-              {formatHour(hour)}
-            </div>
-          ))}
-        </div>
-
-        <div className="event-grid">
-          {weekDays.map((day) => (
-            <div className="day-column" key={day.toISOString()}>
-              {TIME_SLOTS.map((hour) => (
-                <div className="hour-line" key={hour} />
               ))}
-            </div>
-          ))}
+          </div>
+        </div>
+      </section>
+      <MobileWeekCalendar
+        events={events}
+        memberMap={memberMap}
+        onOpenEvent={onOpenEvent}
+        onOpenTask={onOpenTask}
+        scheduledTasks={scheduledTasks}
+        taskColorMap={taskColorMap}
+        tasks={unscheduledTasks}
+        weekDays={weekDays}
+      />
+    </>
+  )
+}
 
-          {events
-            .filter((event) => getWeekdayIndex(new Date(event.startAt), weekDays) >= 0 && getWeekdayIndex(new Date(event.startAt), weekDays) < 7)
-            .map((event) => {
-              const member = event.memberId ? memberMap[event.memberId] : undefined
+function MobileWeekCalendar({
+  events,
+  memberMap,
+  onOpenEvent,
+  onOpenTask,
+  scheduledTasks,
+  taskColorMap,
+  tasks,
+  weekDays,
+}: {
+  events: CalendarEvent[]
+  memberMap: Record<string, FamilyMember>
+  onOpenEvent: (event: CalendarEvent) => void
+  onOpenTask: (task: Task) => void
+  scheduledTasks: Task[]
+  taskColorMap: Record<string, string>
+  tasks: Task[]
+  weekDays: Date[]
+}) {
+  return (
+    <section className="mobile-week-board" aria-label="Compact week calendar">
+      {weekDays.map((day, dayIndex) => {
+        const dayEvents = events.filter((event) => eventOverlapsDay(event, day))
+        const dayTasks = scheduledTasks.filter((task) => task.dueAt && isSameDay(new Date(task.dueAt), day))
+        return (
+          <article className="mobile-day-card" key={day.toISOString()}>
+            <header>
+              <strong>{formatWeekdayLabel(day)}</strong>
+              <span>{dayEvents.length + dayTasks.length} items</span>
+            </header>
+            {dayIndex === 0
+              ? tasks.slice(0, 2).map((task) => (
+                  <button className="mobile-event-pill chore-pill" key={task.id} type="button" onClick={() => onOpenTask(task)}>
+                    {task.title}
+                  </button>
+                ))
+              : null}
+            {dayEvents.map((event) => {
+              const eventMembers = getEventMembers(event, memberMap)
               return (
                 <button
-                  className="calendar-event"
+                  className="mobile-event-pill"
                   key={event.id}
-                  style={{
-                    ...getEventStyle(event, weekDays),
-                    '--event-color': member?.color ?? event.tone ?? '#bfe1df',
-                    '--chip-color': member?.color ?? taskColorMap[member?.name ?? ''] ?? '#8fbcc0',
-                  } as CSSProperties}
+                  style={{ '--event-color': getEventColor(event, eventMembers) } as CSSProperties}
                   type="button"
                   onClick={() => onOpenEvent(event)}
                 >
                   <strong>{event.title}</strong>
-                  <span>
-                    {formatEventTime(event.startAt)} - {formatEventTime(event.endAt)}
-                  </span>
-                  <em>{member?.name.charAt(0) ?? 'F'}</em>
+                  <span>{formatEventRange(event)}</span>
                 </button>
               )
             })}
-
-          {scheduledTasks
-            .filter((task) => task.dueAt && getWeekdayIndex(new Date(task.dueAt), weekDays) >= 0)
-            .map((task) => (
+            {dayTasks.map((task) => (
               <button
-                className={`calendar-event chore-event ${task.completed ? 'is-complete' : ''}`}
+                className={`mobile-event-pill chore-pill ${task.completed ? 'is-complete' : ''}`}
                 key={task.id}
-                style={{
-                  ...getTaskStyle(task, weekDays),
-                  '--event-color': taskColorMap[task.assigneeName || 'Unassigned'] ?? '#cfe6ef',
-                  '--chip-color': taskColorMap[task.assigneeName || 'Unassigned'] ?? '#8fbcc0',
-                } as CSSProperties}
+                style={{ '--event-color': taskColorMap[task.assigneeName || 'Unassigned'] ?? '#cfe6ef' } as CSSProperties}
                 type="button"
                 onClick={() => onOpenTask(task)}
               >
                 <strong>{task.title}</strong>
                 <span>{formatTaskTime(task)}</span>
-                <em>{task.assigneeName.charAt(0).toUpperCase() || 'C'}</em>
               </button>
             ))}
-        </div>
-      </div>
+          </article>
+        )
+      })}
     </section>
+  )
+}
+
+function ParticipantDots({ fallback, members }: { fallback: string; members: FamilyMember[] }) {
+  if (members.length === 0) {
+    return (
+      <span className="participant-dots" aria-label="Whole family">
+        <span style={{ '--member-color': '#8fbcc0' } as CSSProperties}>{fallback}</span>
+      </span>
+    )
+  }
+
+  return (
+    <span className="participant-dots" aria-label={members.map((member) => member.name).join(', ')}>
+      {members.slice(0, 3).map((member) => (
+        <span key={member.id} style={{ '--member-color': member.color } as CSSProperties}>
+          {member.name.charAt(0)}
+        </span>
+      ))}
+    </span>
   )
 }
 
@@ -1696,7 +1864,7 @@ function MonthCalendar({
         </div>
       ))}
       {monthDays.map((day) => {
-        const dayEvents = events.filter((event) => isSameDay(new Date(event.startAt), day))
+        const dayEvents = events.filter((event) => eventOverlapsDay(event, day))
         const dayTasks = scheduledTasks.filter((task) => task.dueAt && isSameDay(new Date(task.dueAt), day))
         const dayItems = [
           ...dayEvents.map((event) => ({ type: 'event' as const, event })),
@@ -1726,12 +1894,12 @@ function MonthCalendar({
                   )
                 }
 
-                const member = item.event.memberId ? memberMap[item.event.memberId] : undefined
+                const eventMembers = getEventMembers(item.event, memberMap)
                 return (
                   <button
                     className="month-event-pill"
                     key={`event-${item.event.id}`}
-                    style={{ '--event-color': member?.color ?? item.event.tone ?? '#bfe1df' } as CSSProperties}
+                    style={{ '--event-color': getEventColor(item.event, eventMembers) } as CSSProperties}
                     type="button"
                     onClick={() => onOpenEvent(item.event)}
                   >
@@ -1795,47 +1963,116 @@ function EventModal({
 
           <div className="form-row">
             <label>
-              <span>Date</span>
+              <span>Start date</span>
               <input
                 type="date"
-                value={eventForm.date}
-                onChange={(event) => setEventForm((current) => ({ ...current, date: event.target.value }))}
+                value={eventForm.startDate}
+                onChange={(event) =>
+                  setEventForm((current) => ({
+                    ...current,
+                    startDate: event.target.value,
+                    endDate: current.endDate < event.target.value ? event.target.value : current.endDate,
+                  }))
+                }
                 required
               />
             </label>
             <label>
-              <span>Member</span>
-              <select value={eventForm.memberId} onChange={(event) => setEventForm((current) => ({ ...current, memberId: event.target.value }))}>
-                <option value="">Whole family</option>
-                {members.map((member) => (
-                  <option key={member.id} value={member.id}>
-                    {member.name}
-                  </option>
-                ))}
-              </select>
+              <span>End date</span>
+              <input
+                type="date"
+                value={eventForm.endDate}
+                min={eventForm.startDate}
+                onChange={(event) => setEventForm((current) => ({ ...current, endDate: event.target.value }))}
+                required
+              />
             </label>
           </div>
 
-          <div className="form-row">
-            <label>
-              <span>Start</span>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={eventForm.isAllDay}
+              onChange={(event) => setEventForm((current) => ({ ...current, isAllDay: event.target.checked }))}
+            />
+            <span>All day</span>
+          </label>
+
+          {!eventForm.isAllDay ? (
+            <div className="form-row">
+              <label>
+                <span>Start</span>
+                <input
+                  type="time"
+                  value={eventForm.startTime}
+                  onChange={(event) =>
+                    setEventForm((current) => ({
+                      ...current,
+                      startTime: event.target.value,
+                      endTime: addMinutesToTimeInput(event.target.value, 60),
+                    }))
+                  }
+                  required
+                />
+              </label>
+              <label>
+                <span>End</span>
+                <input
+                  type="time"
+                  value={eventForm.endTime}
+                  onChange={(event) => setEventForm((current) => ({ ...current, endTime: event.target.value }))}
+                  required
+                />
+              </label>
+            </div>
+          ) : null}
+
+          <fieldset className="member-picker">
+            <legend>People</legend>
+            <label className={`member-choice ${eventForm.isWholeFamily ? 'active' : ''}`}>
               <input
-                type="time"
-                value={eventForm.startTime}
-                onChange={(event) => setEventForm((current) => ({ ...current, startTime: event.target.value }))}
-                required
+                type="radio"
+                checked={eventForm.isWholeFamily}
+                onChange={() =>
+                  setEventForm((current) => ({
+                    ...current,
+                    isWholeFamily: true,
+                    memberIds: [],
+                  }))
+                }
               />
+              <span>Whole family</span>
             </label>
-            <label>
-              <span>End</span>
-              <input
-                type="time"
-                value={eventForm.endTime}
-                onChange={(event) => setEventForm((current) => ({ ...current, endTime: event.target.value }))}
-                required
-              />
-            </label>
-          </div>
+            <div className="member-choice-grid">
+              {members.map((member) => {
+                const selected = eventForm.memberIds.includes(member.id)
+                return (
+                  <label className={`member-choice ${selected ? 'active' : ''}`} key={member.id}>
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={(event) =>
+                        setEventForm((current) => {
+                          const nextMemberIds = event.target.checked
+                            ? [...current.memberIds, member.id]
+                            : current.memberIds.filter((memberId) => memberId !== member.id)
+                          return {
+                            ...current,
+                            isWholeFamily: false,
+                            memberIds: nextMemberIds,
+                          }
+                        })
+                      }
+                    />
+                    <span className="member-dot" style={{ '--member-color': member.color } as CSSProperties}>
+                      {member.name.charAt(0)}
+                    </span>
+                    <span>{member.name}</span>
+                  </label>
+                )
+              })}
+            </div>
+          </fieldset>
 
           <label>
             <span>Notes</span>
@@ -2669,6 +2906,10 @@ function formatEventTime(value: string) {
   return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(new Date(value))
 }
 
+function formatShortDate(value: string | Date) {
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(new Date(value))
+}
+
 function formatShortDateTime(value: string) {
   return new Intl.DateTimeFormat('en-US', {
     month: 'short',
@@ -2689,8 +2930,70 @@ function formatTaskTime(task: Task) {
   return `${formatEventTime(start.toISOString())} - ${formatEventTime(end.toISOString())}`
 }
 
+function formatEventRange(event: CalendarEvent) {
+  if (event.isAllDay) {
+    const start = new Date(event.startAt)
+    const inclusiveEnd = addDays(new Date(event.endAt), -1)
+    return isSameDay(start, inclusiveEnd) ? 'All day' : `${formatShortDate(start)} - ${formatShortDate(inclusiveEnd)}`
+  }
+
+  if (!isSameDay(new Date(event.startAt), new Date(event.endAt))) {
+    return `${formatShortDateTime(event.startAt)} - ${formatShortDateTime(event.endAt)}`
+  }
+
+  return `${formatEventTime(event.startAt)} - ${formatEventTime(event.endAt)}`
+}
+
 function getWeekdayIndex(date: Date, weekDays: Date[]) {
   return weekDays.findIndex((day) => isSameDay(date, day))
+}
+
+function getEventMemberIds(event: CalendarEvent) {
+  if (event.memberIds && event.memberIds.length > 0) {
+    return event.memberIds
+  }
+
+  return event.memberId ? [event.memberId] : []
+}
+
+function getEventMembers(event: CalendarEvent, memberMap: Record<string, FamilyMember>) {
+  return getEventMemberIds(event)
+    .map((memberId) => memberMap[memberId])
+    .filter((member): member is FamilyMember => Boolean(member))
+}
+
+function getEventColor(event: CalendarEvent, members: FamilyMember[]) {
+  return members[0]?.color ?? event.tone ?? '#bfe1df'
+}
+
+function eventOverlapsDay(event: CalendarEvent, day: Date) {
+  const dayStart = new Date(day)
+  dayStart.setHours(0, 0, 0, 0)
+  const dayEnd = addDays(dayStart, 1)
+  return new Date(event.startAt) < dayEnd && new Date(event.endAt) > dayStart
+}
+
+function isTimedSingleDayEvent(event: CalendarEvent) {
+  return !event.isAllDay && isSameDay(new Date(event.startAt), new Date(event.endAt))
+}
+
+function getWeekAllDaySegments(events: CalendarEvent[], weekDays: Date[]) {
+  const weekStart = weekDays[0]
+  const weekEnd = addDays(weekStart, 7)
+  return events
+    .filter((event) => !isTimedSingleDayEvent(event) && new Date(event.startAt) < weekEnd && new Date(event.endAt) > weekStart)
+    .map((event) => {
+      const eventStart = new Date(event.startAt) > weekStart ? new Date(event.startAt) : weekStart
+      const eventEnd = new Date(event.endAt) < weekEnd ? new Date(event.endAt) : weekEnd
+      const startIndex = Math.max(0, getWeekdayIndex(eventStart, weekDays))
+      const inclusiveEnd = new Date(eventEnd.getTime() - 1)
+      const endIndex = Math.max(startIndex, Math.min(6, getWeekdayIndex(inclusiveEnd, weekDays)))
+      return {
+        event,
+        span: endIndex - startIndex + 1,
+        startIndex,
+      }
+    })
 }
 
 function getEventStyle(event: CalendarEvent, weekDays: Date[]): CSSProperties {
@@ -2738,13 +3041,17 @@ function formatDateInput(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
-function createDefaultEventForm(date: Date, memberId = ''): EventFormState {
+function createDefaultEventForm(date: Date): EventFormState {
+  const formattedDate = formatDateInput(date)
   return {
     title: '',
-    date: formatDateInput(date),
+    startDate: formattedDate,
+    endDate: formattedDate,
     startTime: '09:00',
     endTime: '10:00',
-    memberId,
+    memberIds: [],
+    isWholeFamily: true,
+    isAllDay: false,
     notes: '',
   }
 }
@@ -2763,18 +3070,29 @@ function createDefaultTaskScheduleForm(date: Date): TaskScheduleFormState {
 function createEventFormFromEvent(event: CalendarEvent): EventFormState {
   const startAt = new Date(event.startAt)
   const endAt = new Date(event.endAt)
+  const displayEndAt = event.isAllDay ? addDays(endAt, -1) : endAt
+  const memberIds = getEventMemberIds(event)
   return {
     title: event.title,
-    date: formatDateInput(startAt),
+    startDate: formatDateInput(startAt),
+    endDate: formatDateInput(displayEndAt),
     startTime: formatTimeInput(startAt),
     endTime: formatTimeInput(endAt),
-    memberId: event.memberId ?? '',
+    memberIds,
+    isWholeFamily: memberIds.length === 0,
+    isAllDay: Boolean(event.isAllDay),
     notes: event.notes ?? '',
   }
 }
 
 function formatTimeInput(date: Date) {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+function addMinutesToTimeInput(time: string, minutes: number) {
+  const [hours, currentMinutes] = time.split(':').map(Number)
+  const totalMinutes = ((hours * 60 + currentMinutes + minutes) % 1440 + 1440) % 1440
+  return `${String(Math.floor(totalMinutes / 60)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`
 }
 
 function buildDateTime(date: string, time: string) {
