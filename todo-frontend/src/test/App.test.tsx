@@ -1,6 +1,6 @@
 import { MockedProvider } from '@apollo/client/testing/react'
 import type { MockedResponse } from '@apollo/client/testing'
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App, {
   ACCEPT_FAMILY_INVITE,
@@ -19,10 +19,11 @@ import App, {
   GET_TASKS,
   REVOKE_FAMILY_INVITE,
   SIGN_IN,
+  UPDATE_FAMILY,
 } from '../App'
 
-const family = { id: 'family-1', name: 'Smith Family', boardId: 'family-home' }
-const otherFamily = { id: 'family-2', name: 'Garcia Family', boardId: 'garcia-family' }
+const family = { id: 'family-1', name: 'Smith Family', boardId: 'family-home', color: '#3479b5' }
+const otherFamily = { id: 'family-2', name: 'Garcia Family', boardId: 'garcia-family', color: '#8ebc8a' }
 const emma = { id: 'member-1', familyId: 'family-1', name: 'Emma', color: '#6dbec2' }
 const dad = { id: 'member-2', familyId: 'family-1', name: 'Dad', color: '#d67268' }
 const currentUser = { id: 'user-1', email: 'parent@example.com', displayName: 'Parent' }
@@ -484,6 +485,10 @@ describe('App', () => {
     await user.click(within(dialog).getByRole('button', { name: /create event/i }))
 
     expect((await screen.findAllByText('Date Night')).length).toBeGreaterThan(0)
+    const dateNightButton = (await screen.findAllByText('Date Night'))[0].closest('button')
+    expect(dateNightButton?.getAttribute('style')).toContain('linear-gradient')
+    expect(dateNightButton?.getAttribute('style')).toContain(emma.color)
+    expect(dateNightButton?.getAttribute('style')).toContain(dad.color)
   })
 
   it('creates a scheduled chore and shows it on the calendar', async () => {
@@ -628,6 +633,28 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: /add profile/i }))
 
     expect(await screen.findByLabelText(/avery name/i)).toBeInTheDocument()
+  })
+
+  it('updates the whole family color from settings', async () => {
+    const user = userEvent.setup()
+    const updatedFamily = { ...family, color: '#123456' }
+
+    renderApp([
+      ...baseMocks(),
+      {
+        request: { query: UPDATE_FAMILY, variables: { familyId: family.id, name: family.name, color: '#123456' } },
+        result: { data: { updateFamily: updatedFamily } },
+      },
+      { request: { query: GET_FAMILIES }, result: { data: { families: [updatedFamily, otherFamily] } } },
+    ])
+
+    await screen.findByRole('heading', { name: /smith family/i })
+    await user.click(screen.getByRole('button', { name: /settings/i }))
+    const familyColorInput = await screen.findByLabelText(/whole family color/i)
+    fireEvent.change(familyColorInput, { target: { value: '#123456' } })
+    await user.click(screen.getAllByRole('button', { name: /^save$/i })[0])
+
+    expect(await screen.findByDisplayValue('#123456')).toBeInTheDocument()
   })
 
   it('shows read-only family administration to members', async () => {

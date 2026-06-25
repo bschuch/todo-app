@@ -464,8 +464,9 @@
 }
 
 .all-day-pill {
+  position: relative;
   max-width: 100%;
-  padding: 5px 10px;
+  padding: 5px 42px 5px 10px;
   overflow: hidden;
   border: 0;
   border-radius: 999px;
@@ -481,7 +482,7 @@
 .event-span-pill {
   grid-row: 2;
   margin: 4px 6px 8px;
-  background: color-mix(in srgb, var(--event-color, #bfe1df) 60%, white);
+  background: var(--event-background, color-mix(in srgb, var(--event-color, #bfe1df) 60%, white));
 }
 
 .all-day-pill.mint,
@@ -547,7 +548,7 @@
   overflow: hidden;
   border: 0;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--event-color, #bfe1df) 64%, white);
+  background: var(--event-background, color-mix(in srgb, var(--event-color, #bfe1df) 64%, white));
   color: #3a4148;
   font: inherit;
   text-align: left;
@@ -624,6 +625,15 @@
   font-size: 0.74rem;
   font-weight: 900;
   line-height: 1;
+}
+
+.home-participant-icon::before {
+  content: "";
+  width: 12px;
+  height: 9px;
+  display: block;
+  background: #fff;
+  clip-path: polygon(50% 0, 100% 42%, 100% 100%, 64% 100%, 64% 68%, 36% 68%, 36% 100%, 0 100%, 0 42%);
 }
 
 .calendar-event.chore-event,
@@ -720,12 +730,13 @@
 }
 
 .month-event-pill {
+  position: relative;
   min-width: 0;
   border: 0;
   border-radius: 999px;
-  padding: 5px 8px;
+  padding: 5px 38px 5px 8px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--event-color, #bfe1df) 62%, white);
+  background: var(--event-background, color-mix(in srgb, var(--event-color, #bfe1df) 62%, white));
   color: #36424b;
   font: inherit;
   font-size: 0.78rem;
@@ -733,6 +744,20 @@
   text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.month-event-pill .participant-dots,
+.all-day-pill .participant-dots {
+  right: 6px;
+  bottom: 50%;
+  transform: translateY(50%);
+}
+
+.month-event-pill .participant-dots span,
+.all-day-pill .participant-dots span {
+  width: 20px;
+  height: 20px;
+  font-size: 0.66rem;
 }
 
 .month-overflow {
@@ -1517,13 +1542,14 @@
   }
 
   .mobile-event-pill {
+    position: relative;
     display: grid;
     gap: 2px;
     width: 100%;
     border: 0;
     border-radius: 8px;
-    padding: 9px 10px;
-    background: color-mix(in srgb, var(--event-color, #bfe1df) 56%, white);
+    padding: 9px 44px 9px 10px;
+    background: var(--event-background, color-mix(in srgb, var(--event-color, #bfe1df) 56%, white));
     color: #31404b;
     font: inherit;
     text-align: left;
@@ -1532,6 +1558,12 @@
   .mobile-event-pill span {
     font-size: 0.78rem;
     font-weight: 800;
+  }
+
+  .mobile-event-pill .participant-dots {
+    right: 8px;
+    bottom: 50%;
+    transform: translateY(50%);
   }
 
   .mobile-event-pill.chore-pill {

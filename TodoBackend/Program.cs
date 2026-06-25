@@ -66,6 +66,7 @@ static async Task SeedDataAsync(IServiceProvider services)
             Id = ObjectId.GenerateNewId().ToString(),
             Name = "Smith Family",
             BoardId = "family-home",
+            Color = "#3479b5",
             CreatedAt = now,
             UpdatedAt = now
         };

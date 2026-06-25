@@ -1,4 +1,4 @@
-import { gql } from '@apollo/client'
+import { gql, type ApolloCache } from '@apollo/client'
 import { useApolloClient, useMutation, useQuery } from '@apollo/client/react'
 import { type CSSProperties, type FormEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
 import './App.css'
@@ -26,6 +26,7 @@ interface Family {
   id: string
   name: string
   boardId: string
+  color?: string | null
 }
 
 interface FamilyMember {
@@ -180,6 +181,7 @@ export const GET_FAMILIES = gql`
       id
       name
       boardId
+      color
     }
   }
 `
@@ -258,6 +260,7 @@ export const ACCEPT_FAMILY_INVITE = gql`
       id
       name
       boardId
+      color
     }
   }
 `
@@ -357,11 +360,23 @@ export const GET_TASKS = gql`
 `
 
 const CREATE_FAMILY = gql`
-  mutation CreateFamily($name: String!) {
-    createFamily(name: $name) {
+  mutation CreateFamily($name: String!, $color: String) {
+    createFamily(name: $name, color: $color) {
       id
       name
       boardId
+      color
+    }
+  }
+`
+
+export const UPDATE_FAMILY = gql`
+  mutation UpdateFamily($familyId: String!, $name: String!, $color: String!) {
+    updateFamily(familyId: $familyId, name: $name, color: $color) {
+      id
+      name
+      boardId
+      color
     }
   }
 `
@@ -554,6 +569,8 @@ function App() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null)
   const [eventForm, setEventForm] = useState<EventFormState>(() => createDefaultEventForm(new Date()))
   const [newFamilyName, setNewFamilyName] = useState('')
+  const [newFamilyColor, setNewFamilyColor] = useState('#3479b5')
+  const [familyDrafts, setFamilyDrafts] = useState<Record<string, { name: string; color: string }>>({})
   const [newMemberName, setNewMemberName] = useState('')
   const [newMemberColor, setNewMemberColor] = useState(PERSON_COLORS[0])
   const [memberDrafts, setMemberDrafts] = useState<Record<string, { name: string; color: string }>>({})
@@ -619,6 +636,16 @@ function App() {
       localStorage.setItem(SELECTED_FAMILY_KEY, selectedFamily.id)
     }
   }, [families, selectedFamily])
+
+  useEffect(() => {
+    setFamilyDrafts((current) => {
+      const next = { ...current }
+      families.forEach((family) => {
+        next[family.id] ??= { name: family.name, color: getFamilyColor(family) }
+      })
+      return next
+    })
+  }, [families])
 
   const {
     error: membersError,
@@ -759,6 +786,11 @@ function App() {
     awaitRefetchQueries: true,
   })
 
+  const [updateFamily, { loading: updatingFamily }] = useMutation(UPDATE_FAMILY, {
+    refetchQueries: [{ query: GET_FAMILIES }],
+    awaitRefetchQueries: true,
+  })
+
   const [createFamilyMember, { loading: creatingMember }] = useMutation(CREATE_FAMILY_MEMBER, {
     refetchQueries: activeFamilyId ? [{ query: GET_FAMILY_MEMBERS, variables: { familyId: activeFamilyId } }] : [],
     update(cache, { data }) {
@@ -824,18 +856,32 @@ function App() {
   })
 
   const [createCalendarEvent, { loading: creatingEvent }] = useMutation(CREATE_CALENDAR_EVENT, {
+    update(cache, { data }) {
+      const createdEvent = (data as { createCalendarEvent?: CalendarEvent } | undefined)?.createCalendarEvent
+      if (createdEvent) {
+        upsertCalendarEventInCache(cache, activeFamilyId, visibleRange, createdEvent)
+      }
+    },
     refetchQueries: calendarRefetchQueries(activeFamilyId, visibleRange),
-    awaitRefetchQueries: true,
   })
 
   const [updateCalendarEvent, { loading: updatingEvent }] = useMutation(UPDATE_CALENDAR_EVENT, {
+    update(cache, { data }) {
+      const updatedEvent = (data as { updateCalendarEvent?: CalendarEvent | null } | undefined)?.updateCalendarEvent
+      if (updatedEvent) {
+        upsertCalendarEventInCache(cache, activeFamilyId, visibleRange, updatedEvent)
+      }
+    },
     refetchQueries: calendarRefetchQueries(activeFamilyId, visibleRange),
-    awaitRefetchQueries: true,
   })
 
   const [deleteCalendarEvent, { loading: deletingEvent }] = useMutation(DELETE_CALENDAR_EVENT, {
+    update(cache) {
+      if (editingEvent) {
+        removeCalendarEventFromCache(cache, activeFamilyId, visibleRange, editingEvent.id)
+      }
+    },
     refetchQueries: calendarRefetchQueries(activeFamilyId, visibleRange),
-    awaitRefetchQueries: true,
   })
 
   const [createTask, { loading: creatingTask }] = useMutation(CREATE_TASK, {
@@ -1029,13 +1075,29 @@ function App() {
       return
     }
 
-    const result = await createFamily({ variables: { name: newFamilyName } })
+    const result = await createFamily({ variables: { name: newFamilyName, color: newFamilyColor } })
     const createdFamily = (result.data as { createFamily?: Family } | undefined)?.createFamily
     if (createdFamily) {
       handleSelectFamily(createdFamily.id)
     }
     setNewFamilyName('')
+    setNewFamilyColor('#3479b5')
     void refetchFamilies()
+  }
+
+  const handleUpdateFamily = async (family: Family) => {
+    const draft = familyDrafts[family.id] ?? { name: family.name, color: getFamilyColor(family) }
+    if (!draft.name.trim()) {
+      return
+    }
+
+    await updateFamily({
+      variables: {
+        familyId: family.id,
+        name: draft.name,
+        color: draft.color,
+      },
+    })
   }
 
   const handleCreateMember = async (event: FormEvent<HTMLFormElement>) => {
@@ -1221,14 +1283,17 @@ function App() {
               families={families}
               family={selectedFamily}
               familyAccountMembers={familyAccountMembers}
+              familyDrafts={familyDrafts}
               familyInvites={familyInvites}
               familyRole={familyRole}
               handleCreateFamily={handleCreateFamily}
               handleCreateMember={handleCreateMember}
+              handleUpdateFamily={handleUpdateFamily}
               handleUpdateMember={handleUpdateMember}
               memberDrafts={memberDrafts}
               members={members}
               newFamilyName={newFamilyName}
+              newFamilyColor={newFamilyColor}
               newMemberColor={newMemberColor}
               newMemberName={newMemberName}
               onChangeFamily={handleSelectFamily}
@@ -1263,10 +1328,13 @@ function App() {
               removingAccountMember={removingAccountMember}
               revokingInvite={revokingInvite}
               setMemberDrafts={setMemberDrafts}
+              setFamilyDrafts={setFamilyDrafts}
+              setNewFamilyColor={setNewFamilyColor}
               setNewFamilyName={setNewFamilyName}
               setNewMemberColor={setNewMemberColor}
               setNewMemberName={setNewMemberName}
               updatingAccountRole={updatingAccountRole}
+              updatingFamily={updatingFamily}
               updatingMember={updatingMember}
             />
           ) : null}
@@ -1541,8 +1609,8 @@ function CalendarView({
       <section className="member-progress" aria-label="Member progress">
         {activeMembers.slice(0, 4).map((member, index) => {
           const eventCount = events.filter((event) => {
-            const eventMember = event.memberId ? memberMap[event.memberId] : undefined
-            return eventMember?.name === member.name
+            const eventMembers = getEventMembers(event, memberMap)
+            return eventMembers.some((eventMember) => eventMember.name === member.name)
           }).length
           const total = Math.max(member.count + eventCount, index + 2)
           const completed = Math.min(total, Math.max(member.completed + eventCount, index + 1))
@@ -1570,6 +1638,7 @@ function CalendarView({
       {calendarMode === 'week' ? (
         <WeekCalendar
           events={events}
+          family={family}
           memberMap={memberMap}
           onOpenEvent={onOpenEvent}
           onOpenTask={onOpenTask}
@@ -1582,6 +1651,7 @@ function CalendarView({
         <MonthCalendar
           anchorDate={anchorDate}
           events={events}
+          family={family}
           memberMap={memberMap}
           monthDays={monthDays}
           onOpenDay={(date) => onOpenNewEvent(date)}
@@ -1603,6 +1673,7 @@ function CalendarView({
 
 function WeekCalendar({
   events,
+  family,
   memberMap,
   onOpenEvent,
   onOpenTask,
@@ -1612,6 +1683,7 @@ function WeekCalendar({
   weekDays,
 }: {
   events: CalendarEvent[]
+  family?: Family
   memberMap: Record<string, FamilyMember>
   onOpenEvent: (event: CalendarEvent) => void
   onOpenTask: (task: Task) => void
@@ -1648,18 +1720,20 @@ function WeekCalendar({
           ))}
           {allDaySegments.map(({ event, span, startIndex }) => {
             const eventMembers = getEventMembers(event, memberMap)
+            const eventStyle = getEventVisualStyle(event, eventMembers, family)
             return (
               <button
                 className="all-day-pill event-span-pill"
                 key={event.id}
                 style={{
                   gridColumn: `${startIndex + 1} / span ${span}`,
-                  '--event-color': getEventColor(event, eventMembers),
+                  ...eventStyle,
                 } as CSSProperties}
                 type="button"
                 onClick={() => onOpenEvent(event)}
               >
-                {event.title}
+                <span>{event.title}</span>
+                <ParticipantDots members={eventMembers} />
               </button>
             )
           })}
@@ -1687,14 +1761,14 @@ function WeekCalendar({
               .filter((event) => isTimedSingleDayEvent(event) && getWeekdayIndex(new Date(event.startAt), weekDays) >= 0)
               .map((event) => {
                 const eventMembers = getEventMembers(event, memberMap)
+                const eventStyle = getEventVisualStyle(event, eventMembers, family)
                 return (
                   <button
                     className="calendar-event"
                     key={event.id}
                     style={{
                       ...getEventStyle(event, weekDays),
-                      '--event-color': getEventColor(event, eventMembers),
-                      '--chip-color': getEventColor(event, eventMembers),
+                      ...eventStyle,
                     } as CSSProperties}
                     type="button"
                     onClick={() => onOpenEvent(event)}
@@ -1703,7 +1777,7 @@ function WeekCalendar({
                     <span>
                       {formatEventTime(event.startAt)} - {formatEventTime(event.endAt)}
                     </span>
-                    <ParticipantDots members={eventMembers} fallback="F" />
+                    <ParticipantDots members={eventMembers} />
                   </button>
                 )
               })}
@@ -1732,6 +1806,7 @@ function WeekCalendar({
       </section>
       <MobileWeekCalendar
         events={events}
+        family={family}
         memberMap={memberMap}
         onOpenEvent={onOpenEvent}
         onOpenTask={onOpenTask}
@@ -1746,6 +1821,7 @@ function WeekCalendar({
 
 function MobileWeekCalendar({
   events,
+  family,
   memberMap,
   onOpenEvent,
   onOpenTask,
@@ -1755,6 +1831,7 @@ function MobileWeekCalendar({
   weekDays,
 }: {
   events: CalendarEvent[]
+  family?: Family
   memberMap: Record<string, FamilyMember>
   onOpenEvent: (event: CalendarEvent) => void
   onOpenTask: (task: Task) => void
@@ -1787,12 +1864,13 @@ function MobileWeekCalendar({
                 <button
                   className="mobile-event-pill"
                   key={event.id}
-                  style={{ '--event-color': getEventColor(event, eventMembers) } as CSSProperties}
+                  style={getEventVisualStyle(event, eventMembers, family) as CSSProperties}
                   type="button"
                   onClick={() => onOpenEvent(event)}
                 >
                   <strong>{event.title}</strong>
                   <span>{formatEventRange(event)}</span>
+                  <ParticipantDots members={eventMembers} />
                 </button>
               )
             })}
@@ -1815,11 +1893,11 @@ function MobileWeekCalendar({
   )
 }
 
-function ParticipantDots({ fallback, members }: { fallback: string; members: FamilyMember[] }) {
+function ParticipantDots({ members }: { members: FamilyMember[] }) {
   if (members.length === 0) {
     return (
       <span className="participant-dots" aria-label="Whole family">
-        <span style={{ '--member-color': '#8fbcc0' } as CSSProperties}>{fallback}</span>
+        <span className="home-participant-icon" style={{ '--member-color': '#8fbcc0' } as CSSProperties} aria-hidden="true" />
       </span>
     )
   }
@@ -1838,6 +1916,7 @@ function ParticipantDots({ fallback, members }: { fallback: string; members: Fam
 function MonthCalendar({
   anchorDate,
   events,
+  family,
   memberMap,
   monthDays,
   onOpenDay,
@@ -1848,6 +1927,7 @@ function MonthCalendar({
 }: {
   anchorDate: Date
   events: CalendarEvent[]
+  family?: Family
   memberMap: Record<string, FamilyMember>
   monthDays: Date[]
   onOpenDay: (date: Date) => void
@@ -1899,11 +1979,12 @@ function MonthCalendar({
                   <button
                     className="month-event-pill"
                     key={`event-${item.event.id}`}
-                    style={{ '--event-color': getEventColor(item.event, eventMembers) } as CSSProperties}
+                    style={getEventVisualStyle(item.event, eventMembers, family) as CSSProperties}
                     type="button"
                     onClick={() => onOpenEvent(item.event)}
                   >
-                    {item.event.title}
+                    <span>{item.event.title}</span>
+                    <ParticipantDots members={eventMembers} />
                   </button>
                 )
               })}
@@ -2547,14 +2628,17 @@ function SettingsView({
   families,
   family,
   familyAccountMembers,
+  familyDrafts,
   familyInvites,
   familyRole,
   handleCreateFamily,
   handleCreateInvite,
   handleCreateMember,
+  handleUpdateFamily,
   handleUpdateMember,
   memberDrafts,
   members,
+  newFamilyColor,
   newFamilyName,
   newMemberColor,
   newMemberName,
@@ -2567,10 +2651,13 @@ function SettingsView({
   removingAccountMember,
   revokingInvite,
   setMemberDrafts,
+  setFamilyDrafts,
+  setNewFamilyColor,
   setNewFamilyName,
   setNewMemberColor,
   setNewMemberName,
   updatingAccountRole,
+  updatingFamily,
   updatingMember,
 }: {
   copiedInviteId: string | null
@@ -2582,14 +2669,17 @@ function SettingsView({
   families: Family[]
   family?: Family
   familyAccountMembers: FamilyAccountMember[]
+  familyDrafts: Record<string, { name: string; color: string }>
   familyInvites: FamilyInvite[]
   familyRole: 'Owner' | 'Member'
   handleCreateFamily: (event: FormEvent<HTMLFormElement>) => Promise<void>
   handleCreateInvite: () => Promise<void>
   handleCreateMember: (event: FormEvent<HTMLFormElement>) => Promise<void>
+  handleUpdateFamily: (family: Family) => Promise<void>
   handleUpdateMember: (member: FamilyMember) => Promise<void>
   memberDrafts: Record<string, { name: string; color: string }>
   members: FamilyMember[]
+  newFamilyColor: string
   newFamilyName: string
   newMemberColor: string
   newMemberName: string
@@ -2602,10 +2692,13 @@ function SettingsView({
   removingAccountMember: boolean
   revokingInvite: boolean
   setMemberDrafts: (updater: (current: Record<string, { name: string; color: string }>) => Record<string, { name: string; color: string }>) => void
+  setFamilyDrafts: (updater: (current: Record<string, { name: string; color: string }>) => Record<string, { name: string; color: string }>) => void
+  setNewFamilyColor: (color: string) => void
   setNewFamilyName: (name: string) => void
   setNewMemberColor: (color: string) => void
   setNewMemberName: (name: string) => void
   updatingAccountRole: boolean
+  updatingFamily: boolean
   updatingMember: boolean
 }) {
   const isOwner = familyRole === 'Owner'
@@ -2629,10 +2722,54 @@ function SettingsView({
           <form className="setting-row form-setting" onSubmit={(event) => void handleCreateFamily(event)}>
             <span>New family</span>
             <input value={newFamilyName} onChange={(event) => setNewFamilyName(event.target.value)} placeholder="Garcia Family" />
+            <input
+              aria-label="New family color"
+              type="color"
+              value={newFamilyColor}
+              onChange={(event) => setNewFamilyColor(event.target.value)}
+            />
             <button className="primary-button" type="submit" disabled={creatingFamily}>
               {creatingFamily ? 'Creating...' : 'Create family'}
             </button>
           </form>
+
+          {family ? (
+            <div className="setting-row form-setting">
+              <span>Whole family color</span>
+              <input
+                value={(familyDrafts[family.id] ?? { name: family.name, color: getFamilyColor(family) }).name}
+                onChange={(event) =>
+                  setFamilyDrafts((current) => ({
+                    ...current,
+                    [family.id]: {
+                      name: event.target.value,
+                      color: (current[family.id] ?? { name: family.name, color: getFamilyColor(family) }).color,
+                    },
+                  }))
+                }
+                aria-label={`${family.name} family name`}
+                disabled={!isOwner}
+              />
+              <input
+                aria-label="Whole family color"
+                type="color"
+                value={(familyDrafts[family.id] ?? { name: family.name, color: getFamilyColor(family) }).color}
+                onChange={(event) =>
+                  setFamilyDrafts((current) => ({
+                    ...current,
+                    [family.id]: {
+                      name: (current[family.id] ?? { name: family.name, color: getFamilyColor(family) }).name,
+                      color: event.target.value,
+                    },
+                  }))
+                }
+                disabled={!isOwner}
+              />
+              <button className="ghost-button" type="button" disabled={!isOwner || updatingFamily} onClick={() => void handleUpdateFamily(family)}>
+                {updatingFamily ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          ) : null}
         </section>
 
         <section className="settings-list">
@@ -2813,6 +2950,73 @@ function calendarRefetchQueries(familyId: string, visibleRange: { start: Date; e
   ]
 }
 
+function upsertCalendarEventInCache(
+  cache: ApolloCache,
+  familyId: string,
+  visibleRange: { start: Date; end: Date },
+  calendarEvent: CalendarEvent,
+) {
+  if (!familyId || calendarEvent.familyId !== familyId || !eventOverlapsRange(calendarEvent, visibleRange)) {
+    return
+  }
+
+  const variables = getCalendarRangeVariables(familyId, visibleRange)
+  const currentEvents = cache.readQuery<CalendarEventsQueryData>({
+    query: GET_CALENDAR_EVENTS,
+    variables,
+  })
+
+  if (!currentEvents) {
+    return
+  }
+
+  const nextEvents = [
+    ...currentEvents.calendarEvents.filter((currentEvent: CalendarEvent) => currentEvent.id !== calendarEvent.id),
+    calendarEvent,
+  ].sort((left, right) => new Date(left.startAt).getTime() - new Date(right.startAt).getTime())
+
+  cache.writeQuery<CalendarEventsQueryData>({
+    query: GET_CALENDAR_EVENTS,
+    variables,
+    data: { calendarEvents: nextEvents },
+  })
+}
+
+function removeCalendarEventFromCache(
+  cache: ApolloCache,
+  familyId: string,
+  visibleRange: { start: Date; end: Date },
+  eventId: string,
+) {
+  if (!familyId) {
+    return
+  }
+
+  const variables = getCalendarRangeVariables(familyId, visibleRange)
+  const currentEvents = cache.readQuery<CalendarEventsQueryData>({
+    query: GET_CALENDAR_EVENTS,
+    variables,
+  })
+
+  if (!currentEvents) {
+    return
+  }
+
+  cache.writeQuery<CalendarEventsQueryData>({
+    query: GET_CALENDAR_EVENTS,
+    variables,
+    data: { calendarEvents: currentEvents.calendarEvents.filter((calendarEvent: CalendarEvent) => calendarEvent.id !== eventId) },
+  })
+}
+
+function getCalendarRangeVariables(familyId: string, visibleRange: { start: Date; end: Date }) {
+  return {
+    familyId,
+    rangeStart: visibleRange.start.toISOString(),
+    rangeEnd: visibleRange.end.toISOString(),
+  }
+}
+
 function taskRefetchQueries(queryVariables: { boardId: string; includeCompleted: boolean }, familyId: string, visibleRange: { start: Date; end: Date }) {
   const refetchQueries = [{ query: GET_TASKS, variables: queryVariables }]
 
@@ -2962,8 +3166,36 @@ function getEventMembers(event: CalendarEvent, memberMap: Record<string, FamilyM
     .filter((member): member is FamilyMember => Boolean(member))
 }
 
-function getEventColor(event: CalendarEvent, members: FamilyMember[]) {
-  return members[0]?.color ?? event.tone ?? '#bfe1df'
+function getFamilyColor(family?: Family) {
+  return family?.color ?? '#3479b5'
+}
+
+function getEventColor(event: CalendarEvent, members: FamilyMember[], family?: Family) {
+  return members[0]?.color ?? getFamilyColor(family) ?? event.tone ?? '#bfe1df'
+}
+
+function getEventBackground(event: CalendarEvent, members: FamilyMember[], family?: Family) {
+  if (members.length <= 1) {
+    return `color-mix(in srgb, ${getEventColor(event, members, family)} 64%, white)`
+  }
+
+  const segmentSize = 100 / members.length
+  const stops = members.flatMap((member, index) => {
+    const start = Math.round(index * segmentSize * 100) / 100
+    const end = Math.round((index + 1) * segmentSize * 100) / 100
+    const color = `color-mix(in srgb, ${member.color} 68%, white)`
+    return [`${color} ${start}%`, `${color} ${end}%`]
+  })
+  return `linear-gradient(90deg, ${stops.join(', ')})`
+}
+
+function getEventVisualStyle(event: CalendarEvent, members: FamilyMember[], family?: Family): CSSProperties {
+  const eventColor = getEventColor(event, members, family)
+  return {
+    '--event-color': eventColor,
+    '--chip-color': eventColor,
+    '--event-background': getEventBackground(event, members, family),
+  } as CSSProperties
 }
 
 function eventOverlapsDay(event: CalendarEvent, day: Date) {
@@ -2971,6 +3203,10 @@ function eventOverlapsDay(event: CalendarEvent, day: Date) {
   dayStart.setHours(0, 0, 0, 0)
   const dayEnd = addDays(dayStart, 1)
   return new Date(event.startAt) < dayEnd && new Date(event.endAt) > dayStart
+}
+
+function eventOverlapsRange(event: CalendarEvent, range: { start: Date; end: Date }) {
+  return new Date(event.startAt) < range.end && new Date(event.endAt) > range.start
 }
 
 function isTimedSingleDayEvent(event: CalendarEvent) {

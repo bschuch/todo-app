@@ -60,7 +60,7 @@ public class Mutation
         return new AuthPayload { User = user, Token = user.SessionToken };
     }
 
-    public async Task<Family> CreateFamily(string name, [Service] TodoDbContext dbContext, [Service] AuthService authService)
+    public async Task<Family> CreateFamily(string name, string? color, [Service] TodoDbContext dbContext, [Service] AuthService authService)
     {
         var currentUser = await authService.RequireCurrentUserAsync(dbContext);
         var normalizedName = name.Trim();
@@ -75,6 +75,7 @@ public class Mutation
             Id = ObjectId.GenerateNewId().ToString(),
             Name = normalizedName,
             BoardId = NormalizeBoardId(normalizedName),
+            Color = NormalizeColor(color ?? "#3479b5"),
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -95,6 +96,34 @@ public class Mutation
             await dbContext.SaveChangesAsync();
         }
 
+        return family;
+    }
+
+    public async Task<Family?> UpdateFamily(
+        string familyId,
+        string name,
+        string color,
+        [Service] TodoDbContext dbContext,
+        [Service] AuthService authService)
+    {
+        await authService.RequireFamilyOwnerAsync(dbContext, familyId);
+        var family = await dbContext.Families.FirstOrDefaultAsync(currentFamily => currentFamily.Id == familyId);
+        if (family == null)
+        {
+            return null;
+        }
+
+        var normalizedName = name.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedName))
+        {
+            throw new GraphQLException("Family name is required.");
+        }
+
+        family.Name = normalizedName;
+        family.Color = NormalizeColor(color);
+        family.UpdatedAt = DateTime.UtcNow;
+
+        await dbContext.SaveChangesAsync();
         return family;
     }
 
