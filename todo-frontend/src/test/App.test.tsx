@@ -1,6 +1,6 @@
 import { MockedProvider } from '@apollo/client/testing/react'
 import type { MockedResponse } from '@apollo/client/testing'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App, {
   ACCEPT_FAMILY_INVITE,
@@ -8,6 +8,7 @@ import App, {
   CREATE_FAMILY_INVITE,
   CREATE_FAMILY_MEMBER,
   CREATE_TASK,
+  DELETE_CALENDAR_EVENT,
   GET_CALENDAR_EVENTS,
   GET_CURRENT_USER,
   GET_FAMILY_ACCOUNT_MEMBERS,
@@ -162,6 +163,18 @@ describe('App', () => {
     expect((await screen.findAllByText('Grocery Run')).length).toBeGreaterThan(0)
     expect(screen.getAllByText('Clean room').length).toBeGreaterThan(0)
     expect(screen.getAllByText(/sat/i).length).toBeGreaterThan(0)
+  })
+
+  it('keeps timed week events inside one day column', async () => {
+    renderApp()
+
+    const groceryRunButtons = (await screen.findAllByText('Grocery Run'))
+      .map((label) => label.closest('button'))
+      .filter((button): button is HTMLButtonElement => Boolean(button))
+    const desktopEvent = groceryRunButtons.find((button) => button.getAttribute('style')?.includes('14.2857'))
+
+    expect(desktopEvent).toBeDefined()
+    expect(desktopEvent?.getAttribute('style')).toContain('width: calc(14.2857')
   })
 
   it('renders sign-in access and submits credentials', async () => {
@@ -756,9 +769,41 @@ describe('App', () => {
     await screen.findByRole('heading', { name: /smith family/i })
     await user.click((await screen.findAllByText('Grocery Run'))[0])
 
-    expect(await screen.findByRole('dialog', { name: /edit calendar event/i })).toBeInTheDocument()
+    const dialog = await screen.findByRole('dialog', { name: /edit calendar event/i })
+    const summary = within(dialog).getByRole('region', { name: /event summary/i })
+    expect(within(summary).getByText(/when/i)).toBeInTheDocument()
+    expect(within(summary).getByText(/people/i)).toBeInTheDocument()
+    expect(within(summary).getByText(/type/i)).toBeInTheDocument()
+    expect(within(summary).getByText(/emma/i)).toBeInTheDocument()
+    expect(within(summary).getByText(/timed event/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /save changes/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /delete/i })).toBeInTheDocument()
+  })
+
+  it('confirms before deleting a calendar event', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderApp([
+      ...baseMocks(),
+      {
+        request: { query: DELETE_CALENDAR_EVENT, variables: { eventId: calendarEvent.id } },
+        result: { data: { deleteCalendarEvent: true } },
+      },
+      {
+        request: {
+          query: GET_CALENDAR_EVENTS,
+          variables: { familyId: family.id, rangeStart: currentRange('week').start, rangeEnd: currentRange('week').end },
+        },
+        result: { data: { calendarEvents: [] } },
+      },
+    ])
+
+    await screen.findByRole('heading', { name: /smith family/i })
+    await user.click((await screen.findAllByText('Grocery Run'))[0])
+    await user.click(await screen.findByRole('button', { name: /delete/i }))
+
+    expect(window.confirm).toHaveBeenCalledWith('Delete "Grocery Run"?')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /edit calendar event/i })).not.toBeInTheDocument())
   })
 
   it('keeps the calendar shell available when event sync fails', async () => {

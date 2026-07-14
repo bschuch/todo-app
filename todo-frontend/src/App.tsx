@@ -473,7 +473,7 @@ const UPDATE_CALENDAR_EVENT = gql`
   }
 `
 
-const DELETE_CALENDAR_EVENT = gql`
+export const DELETE_CALENDAR_EVENT = gql`
   mutation DeleteCalendarEvent($eventId: String!) {
     deleteCalendarEvent(eventId: $eventId)
   }
@@ -566,6 +566,7 @@ function App() {
   const [activeDropKey, setActiveDropKey] = useState<string | null>(null)
   const [isEventModalOpen, setIsEventModalOpen] = useState(false)
   const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null)
+  const [eventSaveError, setEventSaveError] = useState('')
   const [selectedTask, setSelectedTask] = useState<Task | null>(null)
   const [eventForm, setEventForm] = useState<EventFormState>(() => createDefaultEventForm(new Date()))
   const [newFamilyName, setNewFamilyName] = useState('')
@@ -869,6 +870,7 @@ function App() {
     update(cache, { data }) {
       const updatedEvent = (data as { updateCalendarEvent?: CalendarEvent | null } | undefined)?.updateCalendarEvent
       if (updatedEvent) {
+        removeCalendarEventFromCache(cache, activeFamilyId, visibleRange, updatedEvent.id)
         upsertCalendarEventInCache(cache, activeFamilyId, visibleRange, updatedEvent)
       }
     },
@@ -1009,12 +1011,14 @@ function App() {
 
   const handleOpenNewEvent = (date = anchorDate) => {
     setEditingEvent(null)
+    setEventSaveError('')
     setEventForm(createDefaultEventForm(date))
     setIsEventModalOpen(true)
   }
 
   const handleOpenEventDetails = (calendarEvent: CalendarEvent) => {
     setEditingEvent(calendarEvent)
+    setEventSaveError('')
     setEventForm(createEventFormFromEvent(calendarEvent))
     setIsEventModalOpen(true)
   }
@@ -1025,6 +1029,7 @@ function App() {
       return
     }
 
+    setEventSaveError('')
     const memberIds = eventForm.isWholeFamily ? [] : eventForm.memberIds
     const startAt = eventForm.isAllDay ? buildDateTime(eventForm.startDate, '00:00') : buildDateTime(eventForm.startDate, eventForm.startTime)
     const endAt = eventForm.isAllDay ? addDays(buildDateTime(eventForm.endDate, '00:00'), 1) : buildDateTime(eventForm.endDate, eventForm.endTime)
@@ -1039,20 +1044,43 @@ function App() {
       notes: eventForm.notes,
     }
 
-    if (editingEvent) {
-      await updateCalendarEvent({
-        variables: {
-          eventId: editingEvent.id,
+    try {
+      if (editingEvent) {
+        const optimisticEvent = {
+          ...editingEvent,
           ...variables,
-        },
-      })
-    } else {
-      await createCalendarEvent({
-        variables: {
+          familyId: editingEvent.familyId,
+          tone: variables.memberIds.length > 0 ? memberMap[variables.memberIds[0]]?.color ?? editingEvent.tone : getFamilyColor(selectedFamily),
+        }
+        await updateCalendarEvent({
+          variables: {
+            eventId: editingEvent.id,
+            ...variables,
+          },
+          optimisticResponse: {
+            updateCalendarEvent: optimisticEvent,
+          },
+        })
+      } else {
+        const optimisticEvent = {
+          id: `optimistic-${Date.now()}`,
           familyId: activeFamilyId,
+          tone: variables.memberIds.length > 0 ? memberMap[variables.memberIds[0]]?.color ?? getFamilyColor(selectedFamily) : getFamilyColor(selectedFamily),
           ...variables,
-        },
-      })
+        }
+        await createCalendarEvent({
+          variables: {
+            familyId: activeFamilyId,
+            ...variables,
+          },
+          optimisticResponse: {
+            createCalendarEvent: optimisticEvent,
+          },
+        })
+      }
+    } catch (error) {
+      setEventSaveError(error instanceof Error ? error.message : 'The calendar change could not be saved.')
+      return
     }
 
     setIsEventModalOpen(false)
@@ -1064,7 +1092,22 @@ function App() {
       return
     }
 
-    await deleteCalendarEvent({ variables: { eventId: editingEvent.id } })
+    if (!window.confirm(`Delete "${editingEvent.title}"?`)) {
+      return
+    }
+
+    setEventSaveError('')
+    try {
+      await deleteCalendarEvent({
+        variables: { eventId: editingEvent.id },
+        optimisticResponse: {
+          deleteCalendarEvent: true,
+        },
+      })
+    } catch (error) {
+      setEventSaveError(error instanceof Error ? error.message : 'The event could not be deleted.')
+      return
+    }
     setIsEventModalOpen(false)
     setEditingEvent(null)
   }
@@ -1345,14 +1388,18 @@ function App() {
         <EventModal
           deletingEvent={deletingEvent}
           editingEvent={editingEvent}
+          family={selectedFamily}
           eventForm={eventForm}
+          memberMap={memberMap}
           members={members}
           onClose={() => {
             setIsEventModalOpen(false)
             setEditingEvent(null)
+            setEventSaveError('')
           }}
           onDelete={handleDeleteEvent}
           onSave={handleSaveEvent}
+          saveError={eventSaveError}
           setEventForm={setEventForm}
           savingEvent={creatingEvent || updatingEvent}
         />
@@ -2001,23 +2048,34 @@ function EventModal({
   deletingEvent,
   editingEvent,
   eventForm,
+  family,
+  memberMap,
   members,
   onClose,
   onDelete,
   onSave,
+  saveError,
   savingEvent,
   setEventForm,
 }: {
   deletingEvent: boolean
   editingEvent: CalendarEvent | null
   eventForm: EventFormState
+  family?: Family
+  memberMap: Record<string, FamilyMember>
   members: FamilyMember[]
   onClose: () => void
   onDelete: () => Promise<void>
   onSave: (event: FormEvent<HTMLFormElement>) => Promise<void>
+  saveError: string
   savingEvent: boolean
   setEventForm: (updater: (current: EventFormState) => EventFormState) => void
 }) {
+  const selectedMembers = eventForm.isWholeFamily
+    ? []
+    : eventForm.memberIds.map((memberId) => memberMap[memberId]).filter((member): member is FamilyMember => Boolean(member))
+  const previewStyle = getEventFormVisualStyle(eventForm, selectedMembers, family)
+
   return (
     <div className="modal-backdrop" role="presentation">
       <section className="event-modal" role="dialog" aria-modal="true" aria-label={editingEvent ? 'Edit calendar event' : 'New calendar event'}>
@@ -2032,6 +2090,43 @@ function EventModal({
         </header>
 
         <form className="event-form" onSubmit={(event) => void onSave(event)}>
+          <section className="event-detail-summary" aria-label="Event summary">
+            <div className="event-detail-color-strip" style={previewStyle as CSSProperties} />
+            <div>
+              <span className="event-summary-label">When</span>
+              <strong>{formatEventFormRange(eventForm)}</strong>
+            </div>
+            <div>
+              <span className="event-summary-label">People</span>
+              <div className="event-summary-people">
+                {eventForm.isWholeFamily || selectedMembers.length === 0 ? (
+                  <span className="event-summary-chip" style={{ '--chip-color': getFamilyColor(family) } as CSSProperties}>
+                    <ParticipantDots members={[]} />
+                    Whole family
+                  </span>
+                ) : (
+                  selectedMembers.map((member) => (
+                    <span className="event-summary-chip" key={member.id} style={{ '--chip-color': member.color } as CSSProperties}>
+                      <span className="member-dot" style={{ '--member-color': member.color } as CSSProperties}>
+                        {member.name.charAt(0)}
+                      </span>
+                      {member.name}
+                    </span>
+                  ))
+                )}
+              </div>
+            </div>
+            <div>
+              <span className="event-summary-label">Type</span>
+              <strong>{eventForm.isAllDay ? 'All-day event' : isMultiDayEventForm(eventForm) ? 'Multi-day timed event' : 'Timed event'}</strong>
+            </div>
+          </section>
+          {saveError ? (
+            <div className="form-error" role="alert">
+              {saveError}
+            </div>
+          ) : null}
+
           <label>
             <span>Title</span>
             <input
@@ -3240,13 +3335,15 @@ function getEventStyle(event: CalendarEvent, weekDays: Date[]): CSSProperties {
   const startHour = eventDate.getHours() + eventDate.getMinutes() / 60
   const endHour = endDate.getHours() + endDate.getMinutes() / 60
   const top = Math.max(0, (startHour - firstHour) * rowHeight)
-  const height = Math.max(54, (endHour - startHour) * rowHeight - 8)
+  const height = Math.max(64, (endHour - startHour) * rowHeight - 8)
   const dayIndex = getWeekdayIndex(eventDate, weekDays)
+  const dayWidth = 100 / 7
 
   return {
-    gridColumn: `${dayIndex + 1}`,
     height,
+    left: `calc(${dayIndex * dayWidth}% + 8px)`,
     top,
+    width: `calc(${dayWidth}% - 16px)`,
   }
 }
 
@@ -3301,6 +3398,50 @@ function createDefaultTaskScheduleForm(date: Date): TaskScheduleFormState {
     durationMinutes: '60',
     recurrenceRule: 'None',
   }
+}
+
+function isMultiDayEventForm(eventForm: EventFormState) {
+  return eventForm.startDate !== eventForm.endDate
+}
+
+function formatEventFormRange(eventForm: EventFormState) {
+  const startDate = new Date(`${eventForm.startDate}T00:00:00`)
+  const endDate = new Date(`${eventForm.endDate}T00:00:00`)
+
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    return 'Set dates and times'
+  }
+
+  if (eventForm.isAllDay) {
+    return isSameDay(startDate, endDate) ? `${formatShortDate(startDate)}, all day` : `${formatShortDate(startDate)} - ${formatShortDate(endDate)}, all day`
+  }
+
+  const startDateTime = buildDateTime(eventForm.startDate, eventForm.startTime)
+  const endDateTime = buildDateTime(eventForm.endDate, eventForm.endTime)
+  if (Number.isNaN(startDateTime.getTime()) || Number.isNaN(endDateTime.getTime())) {
+    return isSameDay(startDate, endDate) ? `${formatShortDate(startDate)}, set times` : `${formatShortDate(startDate)} - ${formatShortDate(endDate)}, set times`
+  }
+
+  const startTime = formatEventTime(startDateTime.toISOString())
+  const endTime = formatEventTime(endDateTime.toISOString())
+  return isSameDay(startDate, endDate)
+    ? `${formatShortDate(startDate)}, ${startTime} - ${endTime}`
+    : `${formatShortDate(startDate)} ${startTime} - ${formatShortDate(endDate)} ${endTime}`
+}
+
+function getEventFormVisualStyle(eventForm: EventFormState, members: FamilyMember[], family?: Family): CSSProperties {
+  const event = {
+    id: '',
+    familyId: family?.id ?? '',
+    title: eventForm.title,
+    startAt: new Date(0).toISOString(),
+    endAt: new Date(0).toISOString(),
+    isAllDay: eventForm.isAllDay,
+    notes: eventForm.notes,
+    tone: getFamilyColor(family),
+  }
+
+  return getEventVisualStyle(event, members, family)
 }
 
 function createEventFormFromEvent(event: CalendarEvent): EventFormState {

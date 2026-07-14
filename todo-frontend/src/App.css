@@ -539,12 +539,12 @@
 .calendar-event {
   position: absolute;
   z-index: 1;
-  left: 8px;
-  right: 8px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 10px 34px 10px 12px;
+  justify-content: flex-start;
+  gap: 3px;
+  min-height: 64px;
+  padding: 8px 34px 8px 10px;
   overflow: hidden;
   border: 0;
   border-radius: 8px;
@@ -575,6 +575,7 @@
 .calendar-event span {
   position: relative;
   z-index: 1;
+  line-height: 1.15;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -803,6 +804,69 @@
   display: grid;
   gap: 14px;
   padding: 20px;
+}
+
+.event-detail-summary {
+  display: grid;
+  grid-template-columns: 8px repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+  border: 1px solid #dde8ee;
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fbfd;
+}
+
+.event-detail-color-strip {
+  min-height: 100%;
+  border-radius: 999px;
+  background: var(--event-background, color-mix(in srgb, var(--event-color, #bfe1df) 64%, white));
+}
+
+.event-summary-label {
+  display: block;
+  margin-bottom: 5px;
+  color: #72808b;
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.event-summary-people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.event-summary-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 4px 9px 4px 5px;
+  background: color-mix(in srgb, var(--chip-color, #8fbcc0) 20%, white);
+  color: #35424c;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.event-summary-chip .participant-dots {
+  position: static;
+  transform: none;
+}
+
+.event-summary-chip .participant-dots span {
+  margin-left: 0;
+}
+
+.form-error {
+  border: 1px solid #efb4ad;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff3f1;
+  color: #9a3c32;
+  font-weight: 800;
 }
 
 .event-form label {
@@ -1508,6 +1572,14 @@
 
   .calendar-actions {
     align-items: flex-start;
+  }
+
+  .event-detail-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .event-detail-color-strip {
+    min-height: 8px;
   }
 
   .desktop-week-board {
