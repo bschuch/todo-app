@@ -143,6 +143,7 @@ interface TaskScheduleFormState {
 const BOARD_ID = 'family-home'
 const SELECTED_FAMILY_KEY = 'todo-app-selected-family-id'
 const SESSION_TOKEN_KEY = 'todo-app-session-token'
+const APP_ENVIRONMENT = import.meta.env.VITE_APP_ENVIRONMENT ?? 'Local'
 
 const STATUS_COLUMNS: Array<{ id: TaskStatus; title: string; description: string }> = [
   { id: 'TODO', title: 'To do', description: 'Ready to be picked up next.' },
@@ -209,6 +210,12 @@ export const SIGN_IN = gql`
         displayName
       }
     }
+  }
+`
+
+export const SIGN_OUT = gql`
+  mutation SignOut {
+    signOut
   }
 `
 
@@ -556,6 +563,7 @@ function App() {
   const [authEmail, setAuthEmail] = useState('')
   const [authDisplayName, setAuthDisplayName] = useState('')
   const [authPassword, setAuthPassword] = useState('')
+  const [sessionMessage, setSessionMessage] = useState('')
   const [inviteCode, setInviteCode] = useState('')
   const [copiedInviteId, setCopiedInviteId] = useState<string | null>(null)
   const [title, setTitle] = useState('')
@@ -781,6 +789,15 @@ function App() {
 
   const [signUp, { loading: signingUp }] = useMutation(SIGN_UP)
   const [signIn, { loading: signingIn }] = useMutation(SIGN_IN)
+  const [signOut] = useMutation(SIGN_OUT)
+
+  useEffect(() => {
+    if (!loadingCurrentUser && !currentUserError && sessionToken && currentUserData?.currentUser === null) {
+      localStorage.removeItem(SESSION_TOKEN_KEY)
+      setSessionToken('')
+      setSessionMessage('Your session expired. Please sign in again.')
+    }
+  }, [currentUserData, currentUserError, loadingCurrentUser, sessionToken])
 
   const [createFamily, { loading: creatingFamily }] = useMutation(CREATE_FAMILY, {
     refetchQueries: [{ query: GET_FAMILIES }],
@@ -942,16 +959,22 @@ function App() {
       localStorage.setItem(SESSION_TOKEN_KEY, payload.token)
       setSessionToken(payload.token)
       setAuthPassword('')
+      setSessionMessage('')
       await apolloClient.resetStore()
     }
   }
 
   const handleSignOut = async () => {
+    try {
+      await signOut()
+    } catch {
+      // Local cleanup still signs the browser out if the server is unavailable.
+    }
     localStorage.removeItem(SESSION_TOKEN_KEY)
     setSessionToken('')
     setSelectedFamilyId('')
     localStorage.removeItem(SELECTED_FAMILY_KEY)
-    await apolloClient.resetStore()
+    await apolloClient.clearStore()
   }
 
   const handleSelectFamily = (familyId: string) => {
@@ -1221,6 +1244,7 @@ function App() {
 
         <section className="content-panel">
           {appSyncError ? <SyncBanner message={appSyncError} onRetry={retrySync} /> : null}
+          {sessionMessage ? <div className="session-message" role="status">{sessionMessage}</div> : null}
           <AccessBar
             acceptingInvite={acceptingInvite}
             authDisplayName={authDisplayName}
@@ -1228,6 +1252,7 @@ function App() {
             authMode={authMode}
             authPassword={authPassword}
             currentUser={currentUser}
+            environment={APP_ENVIRONMENT}
             hasSession={Boolean(sessionToken)}
             inviteCode={inviteCode}
             loadingCurrentUser={loadingCurrentUser}
@@ -1440,6 +1465,7 @@ function AccessBar({
   authMode,
   authPassword,
   currentUser,
+  environment,
   hasSession,
   inviteCode,
   loadingCurrentUser,
@@ -1460,6 +1486,7 @@ function AccessBar({
   authMode: AuthMode
   authPassword: string
   currentUser: AppUser | null
+  environment: string
   hasSession: boolean
   inviteCode: string
   loadingCurrentUser: boolean
@@ -1479,8 +1506,8 @@ function AccessBar({
   return (
     <section className="access-bar" aria-label="Family access">
       <div>
-        <span className="board-kicker">Private access</span>
-        <strong>{currentUser ? `Signed in as ${currentUser.displayName}` : hasSession || loadingCurrentUser ? 'Checking access...' : 'Demo mode or sign in'}</strong>
+        <span className="board-kicker">Private access <span className="environment-badge">{environment}</span></span>
+        <strong>{currentUser ? `Signed in as ${currentUser.displayName}` : hasSession || loadingCurrentUser ? 'Checking access...' : environment === 'Local' ? 'Demo mode or sign in' : 'Sign in required'}</strong>
       </div>
 
       {currentUser ? (

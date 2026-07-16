@@ -12,11 +12,13 @@ public class AuthService
     private const string DemoUserId = "development-demo-user";
     private readonly IHttpContextAccessor httpContextAccessor;
     private readonly IWebHostEnvironment environment;
+    private readonly IConfiguration configuration;
 
-    public AuthService(IHttpContextAccessor httpContextAccessor, IWebHostEnvironment environment)
+    public AuthService(IHttpContextAccessor httpContextAccessor, IWebHostEnvironment environment, IConfiguration configuration)
     {
         this.httpContextAccessor = httpContextAccessor;
         this.environment = environment;
+        this.configuration = configuration;
     }
 
     public async Task<CurrentUser?> GetCurrentUserAsync(TodoDbContext dbContext)
@@ -24,14 +26,17 @@ public class AuthService
         var token = GetBearerToken();
         if (!string.IsNullOrWhiteSpace(token))
         {
-            var user = await dbContext.AppUsers.FirstOrDefaultAsync(currentUser => currentUser.SessionToken == token);
-            if (user != null)
+            var tokenHash = HashSessionToken(token);
+            var session = await dbContext.AppSessions.FirstOrDefaultAsync(currentSession =>
+                currentSession.TokenHash == tokenHash && currentSession.RevokedAt == null && currentSession.ExpiresAt > DateTime.UtcNow);
+            var user = session == null ? null : await dbContext.AppUsers.FirstOrDefaultAsync(currentUser => currentUser.Id == session.UserId);
+            if (session != null && user != null)
             {
                 return new CurrentUser(user.Id, user.Email, user.DisplayName, false);
             }
         }
 
-        if (environment.IsDevelopment())
+        if (environment.IsDevelopment() && configuration.GetValue("SeedDemoData", false))
         {
             var demoUser = await dbContext.AppUsers.FirstOrDefaultAsync(user => user.Email == "demo@family.local");
             return demoUser == null
@@ -99,6 +104,44 @@ public class AuthService
     }
 
     public static string CreateSessionToken() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
+
+    public async Task<string> CreateSessionAsync(TodoDbContext dbContext, string userId)
+    {
+        var token = CreateSessionToken();
+        var lifetimeDays = Math.Clamp(configuration.GetValue("Session:LifetimeDays", 30), 1, 365);
+        dbContext.AppSessions.Add(new AppSession
+        {
+            Id = MongoDB.Bson.ObjectId.GenerateNewId().ToString(),
+            UserId = userId,
+            TokenHash = HashSessionToken(token),
+            CreatedAt = DateTime.UtcNow,
+            ExpiresAt = DateTime.UtcNow.AddDays(lifetimeDays)
+        });
+        await dbContext.SaveChangesAsync();
+        return token;
+    }
+
+    public async Task<bool> RevokeCurrentSessionAsync(TodoDbContext dbContext)
+    {
+        var token = GetBearerToken();
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return false;
+        }
+
+        var tokenHash = HashSessionToken(token);
+        var session = await dbContext.AppSessions.FirstOrDefaultAsync(currentSession => currentSession.TokenHash == tokenHash);
+        if (session == null)
+        {
+            return false;
+        }
+
+        session.RevokedAt = DateTime.UtcNow;
+        await dbContext.SaveChangesAsync();
+        return true;
+    }
+
+    public static string HashSessionToken(string token) => Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(token)));
 
     public static string HashPassword(string password)
     {

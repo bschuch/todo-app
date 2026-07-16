@@ -1,5 +1,11 @@
+using System.Diagnostics;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using MongoDB.Bson;
+using MongoDB.Driver;
+using HotChocolate.AspNetCore;
 using TodoBackend.Data;
 using TodoBackend.GraphQL;
 using TodoBackend.Models;
@@ -12,9 +18,25 @@ if (!string.IsNullOrWhiteSpace(port))
     builder.WebHost.UseUrls($"http://*:{port}");
 }
 
+var isHosted = !builder.Environment.IsDevelopment();
 var allowedOrigins = builder.Configuration
     .GetSection("Cors:AllowedOrigins")
-    .Get<string[]>() ?? ["http://localhost:5173", "http://localhost:5174"];
+    .Get<string[]>() ?? [];
+
+var mongoConnectionString = builder.Configuration["Mongo:ConnectionString"];
+var mongoDatabaseName = builder.Configuration["Mongo:DatabaseName"];
+if (builder.Environment.IsDevelopment())
+{
+    mongoConnectionString ??= "mongodb://localhost:27017";
+    mongoDatabaseName ??= "TodoDatabase";
+}
+
+if (isHosted && (string.IsNullOrWhiteSpace(mongoConnectionString) ||
+                 string.IsNullOrWhiteSpace(mongoDatabaseName) ||
+                 allowedOrigins.Length == 0))
+{
+    throw new InvalidOperationException("Hosted environments require Mongo:ConnectionString, Mongo:DatabaseName, and at least one Cors:AllowedOrigins value.");
+}
 
 // Add CORS policy
 builder.Services.AddCors(options =>
@@ -26,14 +48,35 @@ builder.Services.AddCors(options =>
               .AllowAnyHeader());
 });
 
-var mongoConnectionString = builder.Configuration["Mongo:ConnectionString"] ?? "mongodb://localhost:27017";
-var mongoDatabaseName = builder.Configuration["Mongo:DatabaseName"] ?? "TodoDatabase";
-var mongoClient = new MongoDB.Driver.MongoClient(mongoConnectionString);
+var mongoClient = new MongoClient(mongoConnectionString!);
+var mongoDatabase = mongoClient.GetDatabase(mongoDatabaseName!);
+builder.Services.AddSingleton<IMongoClient>(mongoClient);
+builder.Services.AddSingleton(mongoDatabase);
 builder.Services.AddDbContext<TodoDbContext>(options =>
-    options.UseMongoDB(mongoClient, mongoDatabaseName));
+    options.UseMongoDB(mongoClient, mongoDatabaseName!));
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<AuthService>();
+builder.Services.AddSingleton<AuthAttemptLimiter>();
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.KnownNetworks.Clear();
+    options.KnownProxies.Clear();
+});
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("graphql", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = Math.Max(10, builder.Configuration.GetValue("RateLimit:GraphQLRequestsPerMinute", 120)),
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
+});
 
 builder.Services
     .AddGraphQLServer()
@@ -43,12 +86,65 @@ builder.Services
 
 var app = builder.Build();
 
+app.UseForwardedHeaders();
+if (isHosted)
+{
+    app.UseHsts();
+    app.UseHttpsRedirection();
+}
+
+app.Use(async (context, next) =>
+{
+    var stopwatch = Stopwatch.StartNew();
+    try
+    {
+        await next();
+    }
+    catch (Exception exception)
+    {
+        app.Logger.LogError(exception, "Unhandled request failure for {Method} {Path}", context.Request.Method, context.Request.Path);
+        throw;
+    }
+    finally
+    {
+        app.Logger.LogInformation(
+            "HTTP {Method} {Path} responded {StatusCode} in {ElapsedMilliseconds}ms",
+            context.Request.Method,
+            context.Request.Path,
+            context.Response.StatusCode,
+            stopwatch.ElapsedMilliseconds);
+    }
+});
+
 app.UseCors("FrontendPolicy");
+app.UseRateLimiter();
 
-// 3. Add GraphQL endpoint
-app.MapGraphQL();
+app.MapGet("/health/live", () => Results.Ok(new { status = "live" }));
+app.MapGet("/health/ready", async (IMongoDatabase database, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        await database.RunCommandAsync<BsonDocument>(new BsonDocument("ping", 1), cancellationToken: cancellationToken);
+        return Results.Ok(new { status = "ready" });
+    }
+    catch
+    {
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    }
+});
+app.MapGraphQL()
+    .WithOptions(new GraphQLServerOptions
+    {
+        Tool = { Enable = builder.Environment.IsDevelopment() },
+        EnableSchemaRequests = builder.Environment.IsDevelopment()
+    })
+    .RequireRateLimiting("graphql");
 
-await SeedDataAsync(app.Services);
+await EnsureIndexesAsync(mongoDatabase);
+if (builder.Configuration.GetValue("SeedDemoData", false))
+{
+    await SeedDataAsync(app.Services);
+}
 
 app.Run();
 
@@ -84,7 +180,6 @@ static async Task SeedDataAsync(IServiceProvider services)
             Email = "demo@family.local",
             DisplayName = "Demo Family",
             PasswordHash = AuthService.HashPassword("family-demo"),
-            SessionToken = AuthService.CreateSessionToken(),
             CreatedAt = now,
             UpdatedAt = now
         };
@@ -223,4 +318,23 @@ static bool IsPrivate172Address(string host)
            parts[0] == "172" &&
            int.TryParse(parts[1], out var secondOctet) &&
            secondOctet is >= 16 and <= 31;
+}
+
+static async Task EnsureIndexesAsync(IMongoDatabase database)
+{
+    static CreateIndexModel<BsonDocument> Index(BsonDocument keys, bool unique = false, TimeSpan? expireAfter = null) =>
+        new(keys, new CreateIndexOptions { Unique = unique, ExpireAfter = expireAfter });
+
+    await database.GetCollection<BsonDocument>("appUsers").Indexes.CreateOneAsync(Index(new BsonDocument("Email", 1), unique: true));
+    await database.GetCollection<BsonDocument>("familyInvites").Indexes.CreateOneAsync(Index(new BsonDocument("Code", 1), unique: true));
+    await database.GetCollection<BsonDocument>("appSessions").Indexes.CreateManyAsync([
+        Index(new BsonDocument("TokenHash", 1), unique: true),
+        Index(new BsonDocument("ExpiresAt", 1), expireAfter: TimeSpan.Zero)
+    ]);
+    await database.GetCollection<BsonDocument>("familyMemberships").Indexes.CreateOneAsync(
+        Index(new BsonDocument { { "FamilyId", 1 }, { "UserId", 1 } }, unique: true));
+    await database.GetCollection<BsonDocument>("calendarEvents").Indexes.CreateOneAsync(
+        Index(new BsonDocument { { "FamilyId", 1 }, { "StartAt", 1 }, { "EndAt", 1 } }));
+    await database.GetCollection<BsonDocument>("todos").Indexes.CreateOneAsync(
+        Index(new BsonDocument { { "FamilyId", 1 }, { "DueAt", 1 } }));
 }

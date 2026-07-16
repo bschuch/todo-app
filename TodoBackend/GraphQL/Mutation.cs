@@ -13,8 +13,11 @@ public class Mutation
         string email,
         string displayName,
         string password,
-        [Service] TodoDbContext dbContext)
+        [Service] TodoDbContext dbContext,
+        [Service] AuthService authService,
+        [Service] AuthAttemptLimiter attemptLimiter)
     {
+        attemptLimiter.RequirePermit("signup");
         var normalizedEmail = NormalizeEmail(email);
         var normalizedName = displayName.Trim();
         if (string.IsNullOrWhiteSpace(normalizedEmail) || string.IsNullOrWhiteSpace(normalizedName) || password.Length < 8)
@@ -35,18 +38,24 @@ public class Mutation
             Email = normalizedEmail,
             DisplayName = normalizedName,
             PasswordHash = AuthService.HashPassword(password),
-            SessionToken = AuthService.CreateSessionToken(),
             CreatedAt = now,
             UpdatedAt = now
         };
 
         dbContext.AppUsers.Add(user);
         await dbContext.SaveChangesAsync();
-        return new AuthPayload { User = user, Token = user.SessionToken };
+        var token = await authService.CreateSessionAsync(dbContext, user.Id);
+        return new AuthPayload { User = user, Token = token };
     }
 
-    public async Task<AuthPayload> SignIn(string email, string password, [Service] TodoDbContext dbContext)
+    public async Task<AuthPayload> SignIn(
+        string email,
+        string password,
+        [Service] TodoDbContext dbContext,
+        [Service] AuthService authService,
+        [Service] AuthAttemptLimiter attemptLimiter)
     {
+        attemptLimiter.RequirePermit("signin");
         var normalizedEmail = NormalizeEmail(email);
         var user = await dbContext.AppUsers.FirstOrDefaultAsync(currentUser => currentUser.Email == normalizedEmail);
         if (user == null || !AuthService.VerifyPassword(password, user.PasswordHash))
@@ -54,10 +63,15 @@ public class Mutation
             throw new GraphQLException("Email or password was incorrect.");
         }
 
-        user.SessionToken = AuthService.CreateSessionToken();
         user.UpdatedAt = DateTime.UtcNow;
         await dbContext.SaveChangesAsync();
-        return new AuthPayload { User = user, Token = user.SessionToken };
+        var token = await authService.CreateSessionAsync(dbContext, user.Id);
+        return new AuthPayload { User = user, Token = token };
+    }
+
+    public async Task<bool> SignOut([Service] TodoDbContext dbContext, [Service] AuthService authService)
+    {
+        return await authService.RevokeCurrentSessionAsync(dbContext);
     }
 
     public async Task<Family> CreateFamily(string name, string? color, [Service] TodoDbContext dbContext, [Service] AuthService authService)
@@ -213,8 +227,13 @@ public class Mutation
         return true;
     }
 
-    public async Task<Family> AcceptFamilyInvite(string code, [Service] TodoDbContext dbContext, [Service] AuthService authService)
+    public async Task<Family> AcceptFamilyInvite(
+        string code,
+        [Service] TodoDbContext dbContext,
+        [Service] AuthService authService,
+        [Service] AuthAttemptLimiter attemptLimiter)
     {
+        attemptLimiter.RequirePermit("invite");
         var currentUser = await authService.RequireCurrentUserAsync(dbContext);
         var normalizedCode = code.Trim().ToUpperInvariant();
         var invite = await dbContext.FamilyInvites.FirstOrDefaultAsync(currentInvite => currentInvite.Code == normalizedCode);

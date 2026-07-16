@@ -7,8 +7,6 @@ public class AppUser
     public required string DisplayName { get; set; } = string.Empty;
     [GraphQLIgnore]
     public required string PasswordHash { get; set; } = string.Empty;
-    [GraphQLIgnore]
-    public string SessionToken { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 }

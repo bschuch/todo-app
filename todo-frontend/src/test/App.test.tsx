@@ -20,6 +20,7 @@ import App, {
   GET_TASKS,
   REVOKE_FAMILY_INVITE,
   SIGN_IN,
+  SIGN_OUT,
   UPDATE_FAMILY,
 } from '../App'
 
@@ -163,6 +164,42 @@ describe('App', () => {
     expect((await screen.findAllByText('Grocery Run')).length).toBeGreaterThan(0)
     expect(screen.getAllByText('Clean room').length).toBeGreaterThan(0)
     expect(screen.getAllByText(/sat/i).length).toBeGreaterThan(0)
+    expect(screen.getByText('Local')).toBeInTheDocument()
+  })
+
+  it('clears an expired session and asks the user to sign in again', async () => {
+    localStorage.setItem('todo-app-session-token', 'expired-token')
+    render(
+      <MockedProvider mocks={[
+        { request: { query: GET_CURRENT_USER }, result: { data: { currentUser: null } } },
+        { request: { query: GET_FAMILIES }, result: { data: { families: [] } } },
+        { request: { query: GET_TASKS, variables: { boardId: 'family-home', includeCompleted: true } }, result: { data: { tasks: [] } } },
+      ]}>
+        <App />
+      </MockedProvider>,
+    )
+
+    expect(await screen.findByText(/your session expired/i)).toBeInTheDocument()
+    expect(localStorage.getItem('todo-app-session-token')).toBeNull()
+  })
+
+  it('revokes the server session when signing out', async () => {
+    const user = userEvent.setup()
+    localStorage.setItem('todo-app-session-token', 'session-token')
+    render(
+      <MockedProvider mocks={[
+        ...baseMocks(),
+        { request: { query: SIGN_OUT }, result: { data: { signOut: true } } },
+        ...baseMocks(),
+      ]}>
+        <App />
+      </MockedProvider>,
+    )
+
+    await screen.findByText(/signed in as parent/i)
+    await user.click(screen.getByRole('button', { name: /sign out/i }))
+
+    await waitFor(() => expect(localStorage.getItem('todo-app-session-token')).toBeNull())
   })
 
   it('keeps timed week events inside one day column', async () => {

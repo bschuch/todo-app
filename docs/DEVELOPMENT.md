@@ -14,10 +14,15 @@ Backend:
 - `Mongo__DatabaseName`: defaults to `TodoDatabase`.
 - `Cors__AllowedOrigins__0`: first allowed origin.
 - `ASPNETCORE_ENVIRONMENT`: use `Development` locally.
+- `SeedDemoData`: defaults to `true` in local Development and must be `false` when hosted.
+- `Session__LifetimeDays`: session lifetime; defaults to 30 days.
+- `RateLimit__AuthenticationRequestsPerMinute`: per-address sign-in, sign-up, and invite attempt limit.
+- `RateLimit__GraphQLRequestsPerMinute`: per-address GraphQL request limit.
 
 Frontend:
 
 - `VITE_GRAPHQL_URL`: optional. Defaults to `http://<current-host>:5288/graphql`.
+- `VITE_APP_ENVIRONMENT`: optional label shown in the app; defaults to `Local`.
 
 ## Run Locally
 

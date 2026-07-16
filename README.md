@@ -28,7 +28,13 @@ Default local URLs:
 - Backend GraphQL: `http://localhost:5288/graphql`
 - LAN frontend: `http://<your-lan-ip>:5173`
 
-In Development, the backend allows a seeded demo family when no session token is present. Production requires sign-in and family membership.
+Local Development seeds a demo family when `SeedDemoData=true`. Hosted Test and Production environments require sign-in and family membership.
+
+## Branch And Environment Flow
+
+- `develop` automatically deploys to the shared DigitalOcean test environment.
+- Tested changes are merged into `main`.
+- Production deployment from `main` remains manual until production launch.
 
 ## Useful Commands
 
@@ -36,9 +42,11 @@ In Development, the backend allows a seeded demo family when no session token is
 npm run test:run --prefix todo-frontend
 npm run build --prefix todo-frontend
 dotnet build TodoBackend/TodoBackend.csproj --no-restore
+dotnet test TodoBackend.Tests/TodoBackend.Tests.csproj --no-restore
 ```
 
 ## Documentation
 
 - Development setup: `docs/DEVELOPMENT.md`
 - DigitalOcean deployment: `docs/DEPLOYMENT_DIGITALOCEAN.md`
+- Release checklist: `docs/RELEASE_CHECKLIST.md`

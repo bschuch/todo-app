@@ -19,8 +19,7 @@ public class Query
             Id = currentUser.Id,
             Email = currentUser.Email,
             DisplayName = currentUser.DisplayName,
-            PasswordHash = string.Empty,
-            SessionToken = string.Empty
+            PasswordHash = string.Empty
         };
     }
 

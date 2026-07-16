@@ -136,6 +136,31 @@
   gap: 4px;
 }
 
+.environment-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 7px;
+  border: 1px solid #b9d8d7;
+  border-radius: 999px;
+  background: #e9f6f4;
+  color: #326f70;
+  font-family: system-ui, sans-serif;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.session-message {
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border: 1px solid #efcf91;
+  border-radius: 8px;
+  background: #fff8e7;
+  color: #675126;
+}
+
 .access-actions,
 .auth-form,
 .invite-accept-form {

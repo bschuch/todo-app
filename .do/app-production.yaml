@@ -1,0 +1,83 @@
+name: family-organizer
+region: nyc
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED
+ingress:
+  rules:
+    - match:
+        path:
+          prefix: /graphql
+      component:
+        name: family-organizer-api
+        preserve_path_prefix: true
+    - match:
+        path:
+          prefix: /health
+      component:
+        name: family-organizer-api
+        preserve_path_prefix: true
+    - match:
+        path:
+          prefix: /
+      component:
+        name: family-organizer-web
+static_sites:
+  - name: family-organizer-web
+    github:
+      repo: bschuch/todo-app
+      branch: main
+      deploy_on_push: false
+    source_dir: todo-frontend
+    build_command: npm ci && npm run build
+    output_dir: dist
+    envs:
+      - key: VITE_GRAPHQL_URL
+        scope: BUILD_TIME
+        value: ${APP_URL}/graphql
+      - key: VITE_APP_ENVIRONMENT
+        scope: BUILD_TIME
+        value: Production
+services:
+  - name: family-organizer-api
+    github:
+      repo: bschuch/todo-app
+      branch: main
+      deploy_on_push: false
+    source_dir: TodoBackend
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 8080
+    build_command: dotnet publish TodoBackend.csproj -c Release -o out
+    run_command: dotnet out/TodoBackend.dll
+    health_check:
+      http_path: /health/ready
+      initial_delay_seconds: 10
+      timeout_seconds: 5
+      failure_threshold: 6
+    envs:
+      - key: ASPNETCORE_ENVIRONMENT
+        scope: RUN_TIME
+        value: Production
+      - key: Mongo__ConnectionString
+        scope: RUN_TIME
+        type: SECRET
+        value: REPLACE_WITH_PRODUCTION_MONGODB_CONNECTION_STRING
+      - key: Mongo__DatabaseName
+        scope: RUN_TIME
+        value: family-organizer-production
+      - key: Cors__AllowedOrigins__0
+        scope: RUN_TIME
+        value: ${APP_URL}
+      - key: SeedDemoData
+        scope: RUN_TIME
+        value: "false"
+      - key: Session__LifetimeDays
+        scope: RUN_TIME
+        value: "30"
+      - key: RateLimit__AuthenticationRequestsPerMinute
+        scope: RUN_TIME
+        value: "10"
+      - key: RateLimit__GraphQLRequestsPerMinute
+        scope: RUN_TIME
+        value: "120"
