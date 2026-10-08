@@ -25,7 +25,7 @@ import App, {
 } from '../App'
 
 const family = { id: 'family-1', name: 'Smith Family', boardId: 'family-home', color: '#3479b5' }
-const otherFamily = { id: 'family-2', name: 'Garcia Family', boardId: 'garcia-family', color: '#8ebc8a' }
+const otherFamily = { id: 'family-2', name: 'Garcia Family', boardId: 'family-home', color: '#8ebc8a' }
 const emma = { id: 'member-1', familyId: 'family-1', name: 'Emma', color: '#6dbec2' }
 const dad = { id: 'member-2', familyId: 'family-1', name: 'Dad', color: '#d67268' }
 const currentUser = { id: 'user-1', email: 'parent@example.com', displayName: 'Parent' }
@@ -123,7 +123,7 @@ function baseMocks({ eventError = false } = {}): MockedResponse[] {
     {
       request: {
         query: GET_TASKS,
-        variables: { boardId: family.boardId, includeCompleted: true },
+        variables: { familyId: family.id, includeCompleted: true },
       },
       result: { data: { tasks: [task] } },
     },
@@ -173,7 +173,7 @@ describe('App', () => {
       <MockedProvider mocks={[
         { request: { query: GET_CURRENT_USER }, result: { data: { currentUser: null } } },
         { request: { query: GET_FAMILIES }, result: { data: { families: [] } } },
-        { request: { query: GET_TASKS, variables: { boardId: 'family-home', includeCompleted: true } }, result: { data: { tasks: [] } } },
+        { request: { query: GET_TASKS, variables: { familyId: family.id, includeCompleted: true } }, result: { data: { tasks: [] } } },
       ]}>
         <App />
       </MockedProvider>,
@@ -221,7 +221,7 @@ describe('App', () => {
     renderApp([
       { request: { query: GET_CURRENT_USER }, result: { data: { currentUser: null } } },
       { request: { query: GET_FAMILIES }, result: { data: { families: [] } } },
-      { request: { query: GET_TASKS, variables: { boardId: 'family-home', includeCompleted: true } }, result: { data: { tasks: [] } } },
+      { request: { query: GET_TASKS, variables: { familyId: family.id, includeCompleted: true } }, result: { data: { tasks: [] } } },
       {
         request: {
           query: SIGN_IN,
@@ -242,7 +242,7 @@ describe('App', () => {
         request: { query: GET_CALENDAR_EVENTS, variables: { familyId: family.id, rangeStart: weekRange.start, rangeEnd: weekRange.end } },
         result: { data: { calendarEvents: [calendarEvent] } },
       },
-      { request: { query: GET_TASKS, variables: { boardId: family.boardId, includeCompleted: true } }, result: { data: { tasks: [task] } } },
+      { request: { query: GET_TASKS, variables: { familyId: family.id, includeCompleted: true } }, result: { data: { tasks: [task] } } },
       {
         request: { query: GET_SCHEDULED_TASKS, variables: { familyId: family.id, rangeStart: weekRange.start, rangeEnd: weekRange.end } },
         result: { data: { scheduledTasks: [] } },
@@ -563,7 +563,6 @@ describe('App', () => {
             title: 'Water plants',
             assigneeName: emma.name,
             familyId: family.id,
-            boardId: family.boardId,
             status: 'TODO',
             dueAt,
             durationMinutes: 60,
@@ -575,7 +574,7 @@ describe('App', () => {
       {
         request: {
           query: GET_TASKS,
-          variables: { boardId: family.boardId, includeCompleted: true },
+          variables: { familyId: family.id, includeCompleted: true },
         },
         result: { data: { tasks: [task, scheduledTask] } },
       },
@@ -635,7 +634,7 @@ describe('App', () => {
         result: { data: { scheduledTasks: [] } },
       },
       {
-        request: { query: GET_TASKS, variables: { boardId: otherFamily.boardId, includeCompleted: true } },
+        request: { query: GET_TASKS, variables: { familyId: otherFamily.id, includeCompleted: true } },
         result: { data: { tasks: [] } },
       },
     ])

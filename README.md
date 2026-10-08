@@ -49,4 +49,5 @@ dotnet test TodoBackend.Tests/TodoBackend.Tests.csproj --no-restore
 
 - Development setup: `docs/DEVELOPMENT.md`
 - DigitalOcean deployment: `docs/DEPLOYMENT_DIGITALOCEAN.md`
+- Task ownership migration: `docs/TASK_OWNERSHIP_MIGRATION.md`
 - Release checklist: `docs/RELEASE_CHECKLIST.md`

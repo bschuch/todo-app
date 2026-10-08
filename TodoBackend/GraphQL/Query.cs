@@ -128,20 +128,11 @@ public class Query
     public async Task<List<Todo>> GetTasks(
         [Service] TodoDbContext context,
         [Service] AuthService authService,
-        string boardId = "family-home",
+        string familyId,
         bool includeCompleted = true)
     {
-        var family = await context.Families.FirstOrDefaultAsync(currentFamily => currentFamily.BoardId == boardId);
-        if (family != null)
-        {
-            await authService.RequireFamilyAccessAsync(context, family.Id);
-        }
-        else
-        {
-            await authService.RequireCurrentUserAsync(context);
-        }
-
-        var query = context.Todos.Where(task => task.BoardId == boardId);
+        await authService.RequireExistingFamilyAccessAsync(context, familyId);
+        var query = context.Todos.Where(task => task.FamilyId == familyId);
 
         if (!includeCompleted)
         {
@@ -158,7 +149,7 @@ public class Query
         DateTime rangeStart,
         DateTime rangeEnd)
     {
-        await authService.RequireFamilyAccessAsync(context, familyId);
+        await authService.RequireExistingFamilyAccessAsync(context, familyId);
         return await context.Todos
             .Where(task =>
                 task.FamilyId == familyId &&
@@ -172,6 +163,9 @@ public class Query
     public async Task<List<Todo>> GetTodos([Service] TodoDbContext context, [Service] AuthService authService)
     {
         await authService.RequireCurrentUserAsync(context);
-        return await context.Todos.OrderBy(task => task.Status).ThenBy(task => task.SortOrder).ToListAsync();
+        var families = await GetFamilies(context, authService);
+        var familyIds = families.Select(family => family.Id).ToList();
+        return await context.Todos.Where(task => familyIds.Contains(task.FamilyId!))
+            .OrderBy(task => task.Status).ThenBy(task => task.SortOrder).ToListAsync();
     }
 }

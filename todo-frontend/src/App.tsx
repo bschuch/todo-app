@@ -140,7 +140,6 @@ interface TaskScheduleFormState {
   recurrenceRule: string
 }
 
-const BOARD_ID = 'family-home'
 const SELECTED_FAMILY_KEY = 'todo-app-selected-family-id'
 const SESSION_TOKEN_KEY = 'todo-app-session-token'
 const APP_ENVIRONMENT = import.meta.env.VITE_APP_ENVIRONMENT ?? 'Local'
@@ -349,8 +348,8 @@ export const GET_SCHEDULED_TASKS = gql`
 `
 
 export const GET_TASKS = gql`
-  query GetTasks($boardId: String!, $includeCompleted: Boolean!) {
-    tasks(boardId: $boardId, includeCompleted: $includeCompleted) {
+  query GetTasks($familyId: String!, $includeCompleted: Boolean!) {
+    tasks(familyId: $familyId, includeCompleted: $includeCompleted) {
       id
       familyId
       title
@@ -490,8 +489,7 @@ export const CREATE_TASK = gql`
   mutation CreateTask(
     $title: String!
     $assigneeName: String!
-    $familyId: String
-    $boardId: String!
+    $familyId: String!
     $status: TaskStatus!
     $dueAt: DateTime
     $durationMinutes: Int
@@ -501,7 +499,6 @@ export const CREATE_TASK = gql`
       title: $title
       assigneeName: $assigneeName
       familyId: $familyId
-      boardId: $boardId
       status: $status
       dueAt: $dueAt
       durationMinutes: $durationMinutes
@@ -608,7 +605,6 @@ function App() {
     [families, selectedFamilyId],
   )
   const activeFamilyId = selectedFamily?.id ?? ''
-  const activeBoardId = selectedFamily?.boardId ?? BOARD_ID
 
   const { data: familyRoleData, refetch: refetchFamilyRole } = useQuery<FamilyRoleQueryData>(GET_MY_FAMILY_ROLE, {
     skip: !activeFamilyId,
@@ -693,7 +689,7 @@ function App() {
   })
 
   const queryVariables = {
-    boardId: activeBoardId,
+    familyId: activeFamilyId,
     includeCompleted: !hideCompleted,
   }
 
@@ -704,6 +700,7 @@ function App() {
     refetch: refetchTasks,
   } = useQuery<TasksQueryData>(GET_TASKS, {
     variables: queryVariables,
+    skip: !activeFamilyId,
   })
 
   const members = useMemo(() => membersData?.familyMembers ?? [], [membersData])
@@ -984,7 +981,7 @@ function App() {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!title.trim()) {
+    if (!title.trim() || !activeFamilyId) {
       return
     }
 
@@ -992,8 +989,7 @@ function App() {
       variables: {
         title,
         assigneeName: assigneeName || members[0]?.name || 'Unassigned',
-        familyId: activeFamilyId || null,
-        boardId: activeBoardId,
+        familyId: activeFamilyId,
         status: 'TODO',
         dueAt: taskScheduleForm.date ? buildDateTime(taskScheduleForm.date, taskScheduleForm.time || '09:00').toISOString() : null,
         durationMinutes: taskScheduleForm.date ? Number(taskScheduleForm.durationMinutes) || 60 : null,
@@ -3139,7 +3135,7 @@ function getCalendarRangeVariables(familyId: string, visibleRange: { start: Date
   }
 }
 
-function taskRefetchQueries(queryVariables: { boardId: string; includeCompleted: boolean }, familyId: string, visibleRange: { start: Date; end: Date }) {
+function taskRefetchQueries(queryVariables: { familyId: string; includeCompleted: boolean }, familyId: string, visibleRange: { start: Date; end: Date }) {
   const refetchQueries = [{ query: GET_TASKS, variables: queryVariables }]
 
   if (!familyId) {

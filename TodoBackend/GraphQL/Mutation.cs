@@ -305,7 +305,7 @@ public class Mutation
 
         var events = await dbContext.CalendarEvents.Where(calendarEvent => calendarEvent.FamilyId == familyId).ToListAsync();
         var members = await dbContext.FamilyMembers.Where(member => member.FamilyId == familyId).ToListAsync();
-        var tasks = await dbContext.Todos.Where(task => task.BoardId == family.BoardId).ToListAsync();
+        var tasks = await dbContext.Todos.Where(task => task.FamilyId == familyId).ToListAsync();
         var memberships = await dbContext.FamilyMemberships.Where(membership => membership.FamilyId == familyId).ToListAsync();
         var invites = await dbContext.FamilyInvites.Where(invite => invite.FamilyId == familyId).ToListAsync();
 
@@ -442,8 +442,7 @@ public class Mutation
         string assigneeName,
         [Service] TodoDbContext dbContext,
         [Service] AuthService authService,
-        string? familyId = null,
-        string boardId = "family-home",
+        string familyId,
         WorkflowTaskStatus status = WorkflowTaskStatus.Todo,
         DateTime? dueAt = null,
         int? durationMinutes = null,
@@ -455,15 +454,16 @@ public class Mutation
             throw new GraphQLException("Task title is required.");
         }
 
-        await RequireTaskFamilyAccessAsync(dbContext, authService, familyId, boardId);
+        var family = await authService.RequireExistingFamilyAccessAsync(dbContext, familyId);
+        var boardId = family.BoardId;
         await ValidateTaskScheduleAsync(dbContext, familyId, dueAt, durationMinutes);
 
-        var nextOrder = await GetNextSortOrderAsync(dbContext, boardId, status);
+        var nextOrder = await GetNextSortOrderAsync(dbContext, familyId, status);
         var task = new Todo
         {
             Id = ObjectId.GenerateNewId().ToString(),
             Title = normalizedTitle,
-            FamilyId = string.IsNullOrWhiteSpace(familyId) ? null : familyId,
+            FamilyId = family.Id,
             AssigneeName = assigneeName.Trim(),
             BoardId = boardId,
             Status = status,
@@ -495,7 +495,7 @@ public class Mutation
             return null;
         }
 
-        await RequireTaskFamilyAccessAsync(dbContext, authService, task.FamilyId, task.BoardId);
+        await authService.RequireExistingFamilyAccessAsync(dbContext, task.FamilyId);
         await ValidateTaskScheduleAsync(dbContext, task.FamilyId, dueAt, durationMinutes);
 
         task.DueAt = dueAt?.ToUniversalTime();
@@ -515,14 +515,14 @@ public class Mutation
             return null;
         }
 
-        await RequireTaskFamilyAccessAsync(dbContext, authService, task.FamilyId, task.BoardId);
+        await authService.RequireExistingFamilyAccessAsync(dbContext, task.FamilyId);
         var sourceStatus = task.Status;
         task.Completed = !task.Completed;
         task.Status = task.Completed ? WorkflowTaskStatus.Done : WorkflowTaskStatus.Todo;
         task.UpdatedAt = DateTime.UtcNow;
 
-        await NormalizeSortOrdersAsync(dbContext, task.BoardId, sourceStatus, task.Id, null);
-        await NormalizeSortOrdersAsync(dbContext, task.BoardId, task.Status, task.Id, null);
+        await NormalizeSortOrdersAsync(dbContext, task.FamilyId!, sourceStatus, task.Id, null);
+        await NormalizeSortOrdersAsync(dbContext, task.FamilyId!, task.Status, task.Id, null);
         await dbContext.SaveChangesAsync();
         return task;
     }
@@ -540,16 +540,15 @@ public class Mutation
             return null;
         }
 
-        await RequireTaskFamilyAccessAsync(dbContext, authService, task.FamilyId, task.BoardId);
+        await authService.RequireExistingFamilyAccessAsync(dbContext, task.FamilyId);
         var sourceStatus = task.Status;
-        var boardId = task.BoardId;
 
         task.Status = targetStatus;
         task.Completed = targetStatus == WorkflowTaskStatus.Done;
         task.UpdatedAt = DateTime.UtcNow;
 
-        await NormalizeSortOrdersAsync(dbContext, boardId, sourceStatus, task.Id, null);
-        await NormalizeSortOrdersAsync(dbContext, boardId, targetStatus, task.Id, targetOrder);
+        await NormalizeSortOrdersAsync(dbContext, task.FamilyId!, sourceStatus, task.Id, null);
+        await NormalizeSortOrdersAsync(dbContext, task.FamilyId!, targetStatus, task.Id, targetOrder);
 
         await dbContext.SaveChangesAsync();
         return task;
@@ -563,23 +562,22 @@ public class Mutation
             return false;
         }
 
-        await RequireTaskFamilyAccessAsync(dbContext, authService, task.FamilyId, task.BoardId);
-        var boardId = task.BoardId;
+        await authService.RequireExistingFamilyAccessAsync(dbContext, task.FamilyId);
         var status = task.Status;
 
         dbContext.Todos.Remove(task);
         await dbContext.SaveChangesAsync();
 
         // Don't pass movingTaskId - just normalize the remaining tasks
-        await NormalizeSortOrdersAsync(dbContext, boardId, status, null, null);
+        await NormalizeSortOrdersAsync(dbContext, task.FamilyId!, status, null, null);
         await dbContext.SaveChangesAsync();
         return true;
     }
 
-    private static async Task<int> GetNextSortOrderAsync(TodoDbContext dbContext, string boardId, WorkflowTaskStatus status)
+    private static async Task<int> GetNextSortOrderAsync(TodoDbContext dbContext, string familyId, WorkflowTaskStatus status)
     {
         var highestSortOrder = await dbContext.Todos
-            .Where(task => task.BoardId == boardId && task.Status == status)
+            .Where(task => task.FamilyId == familyId && task.Status == status)
             .OrderByDescending(task => task.SortOrder)
             .Select(task => (int?)task.SortOrder)
             .FirstOrDefaultAsync();
@@ -589,13 +587,13 @@ public class Mutation
 
     private static async Task NormalizeSortOrdersAsync(
         TodoDbContext dbContext,
-        string boardId,
+        string familyId,
         WorkflowTaskStatus status,
         string? movingTaskId,
         int? targetOrder)
     {
         var tasks = await dbContext.Todos
-            .Where(task => task.BoardId == boardId && task.Status == status && (movingTaskId == null || task.Id != movingTaskId))
+            .Where(task => task.FamilyId == familyId && task.Status == status && (movingTaskId == null || task.Id != movingTaskId))
             .OrderBy(task => task.SortOrder)
             .ToListAsync();
 
@@ -606,7 +604,7 @@ public class Mutation
         Todo? movingTask = null;
         if (!string.IsNullOrWhiteSpace(movingTaskId))
         {
-            movingTask = await dbContext.Todos.FirstOrDefaultAsync(task => task.Id == movingTaskId);
+            movingTask = await dbContext.Todos.FirstOrDefaultAsync(task => task.Id == movingTaskId && task.FamilyId == familyId);
         }
 
         if (movingTask != null && movingTask.Status == status)
@@ -690,24 +688,6 @@ public class Mutation
         {
             throw new GraphQLException("Task duration must be between 1 and 1440 minutes.");
         }
-    }
-
-    private static async Task RequireTaskFamilyAccessAsync(TodoDbContext dbContext, AuthService authService, string? familyId, string boardId)
-    {
-        if (!string.IsNullOrWhiteSpace(familyId))
-        {
-            await authService.RequireFamilyAccessAsync(dbContext, familyId);
-            return;
-        }
-
-        var family = await dbContext.Families.FirstOrDefaultAsync(currentFamily => currentFamily.BoardId == boardId);
-        if (family != null)
-        {
-            await authService.RequireFamilyAccessAsync(dbContext, family.Id);
-            return;
-        }
-
-        await authService.RequireCurrentUserAsync(dbContext);
     }
 
     private static async Task<string> ResolveMemberToneAsync(TodoDbContext dbContext, string? memberId)

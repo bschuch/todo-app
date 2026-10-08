@@ -11,7 +11,8 @@ using TodoBackend.GraphQL;
 using TodoBackend.Models;
 using TodoBackend.Services;
 using WorkflowTaskStatus = TodoBackend.Models.TaskStatus;
-var builder = WebApplication.CreateBuilder(args);
+var builder = WebApplication.CreateBuilder(args.Where(argument =>
+    argument is not "--migrate-task-ownership" and not "--apply").ToArray());
 var port = Environment.GetEnvironmentVariable("PORT");
 if (!string.IsNullOrWhiteSpace(port))
 {
@@ -140,6 +141,14 @@ app.MapGraphQL()
     })
     .RequireRateLimiting("graphql");
 
+if (args.Contains("--migrate-task-ownership"))
+{
+    using var scope = app.Services.CreateScope();
+    await TaskOwnershipMigration.RunAsync(scope.ServiceProvider.GetRequiredService<TodoDbContext>(),
+        app.Logger, args.Contains("--apply"));
+    return;
+}
+
 await EnsureIndexesAsync(mongoDatabase);
 if (builder.Configuration.GetValue("SeedDemoData", false))
 {
@@ -249,12 +258,12 @@ static async Task SeedDataAsync(IServiceProvider services)
 
     var seedTasks = new[]
     {
-        new Todo { Title = "Clean room", AssigneeName = "Emma", Status = WorkflowTaskStatus.Todo, SortOrder = 0, BoardId = "family-home", Completed = false },
-        new Todo { Title = "Homework review", AssigneeName = "Emma", Status = WorkflowTaskStatus.InProgress, SortOrder = 0, BoardId = "family-home", Completed = false },
-        new Todo { Title = "Replace air filters", AssigneeName = "James", Status = WorkflowTaskStatus.Todo, SortOrder = 1, BoardId = "family-home", Completed = false },
-        new Todo { Title = "Prep DMV paperwork", AssigneeName = "James", Status = WorkflowTaskStatus.Done, SortOrder = 0, BoardId = "family-home", Completed = true },
-        new Todo { Title = "Unload dishwasher", AssigneeName = "Katie", Status = WorkflowTaskStatus.InProgress, SortOrder = 1, BoardId = "family-home", Completed = false },
-        new Todo { Title = "Call vet", AssigneeName = "Marcus", Status = WorkflowTaskStatus.Todo, SortOrder = 2, BoardId = "family-home", Completed = false }
+        new Todo { FamilyId = defaultFamily.Id, Title = "Clean room", AssigneeName = "Emma", Status = WorkflowTaskStatus.Todo, SortOrder = 0, BoardId = "family-home", Completed = false },
+        new Todo { FamilyId = defaultFamily.Id, Title = "Homework review", AssigneeName = "Emma", Status = WorkflowTaskStatus.InProgress, SortOrder = 0, BoardId = "family-home", Completed = false },
+        new Todo { FamilyId = defaultFamily.Id, Title = "Replace air filters", AssigneeName = "James", Status = WorkflowTaskStatus.Todo, SortOrder = 1, BoardId = "family-home", Completed = false },
+        new Todo { FamilyId = defaultFamily.Id, Title = "Prep DMV paperwork", AssigneeName = "James", Status = WorkflowTaskStatus.Done, SortOrder = 0, BoardId = "family-home", Completed = true },
+        new Todo { FamilyId = defaultFamily.Id, Title = "Unload dishwasher", AssigneeName = "Katie", Status = WorkflowTaskStatus.InProgress, SortOrder = 1, BoardId = "family-home", Completed = false },
+        new Todo { FamilyId = defaultFamily.Id, Title = "Call vet", AssigneeName = "Marcus", Status = WorkflowTaskStatus.Todo, SortOrder = 2, BoardId = "family-home", Completed = false }
     };
 
     foreach (var task in seedTasks)
@@ -335,6 +344,8 @@ static async Task EnsureIndexesAsync(IMongoDatabase database)
         Index(new BsonDocument { { "FamilyId", 1 }, { "UserId", 1 } }, unique: true));
     await database.GetCollection<BsonDocument>("calendarEvents").Indexes.CreateOneAsync(
         Index(new BsonDocument { { "FamilyId", 1 }, { "StartAt", 1 }, { "EndAt", 1 } }));
-    await database.GetCollection<BsonDocument>("todos").Indexes.CreateOneAsync(
-        Index(new BsonDocument { { "FamilyId", 1 }, { "DueAt", 1 } }));
+    await database.GetCollection<BsonDocument>("todos").Indexes.CreateManyAsync([
+        Index(new BsonDocument { { "FamilyId", 1 }, { "DueAt", 1 } }),
+        Index(new BsonDocument { { "FamilyId", 1 }, { "Status", 1 }, { "SortOrder", 1 } })
+    ]);
 }

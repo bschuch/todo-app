@@ -76,6 +76,15 @@ public class AuthService
         }
     }
 
+    public async Task<Family> RequireExistingFamilyAccessAsync(TodoDbContext dbContext, string? familyId)
+    {
+        if (string.IsNullOrWhiteSpace(familyId))
+            throw new GraphQLException("Task family access is required.");
+        await RequireFamilyAccessAsync(dbContext, familyId);
+        return await dbContext.Families.FirstOrDefaultAsync(family => family.Id == familyId)
+            ?? throw new GraphQLException("Task family access is required.");
+    }
+
     public async Task<string?> GetFamilyRoleAsync(TodoDbContext dbContext, string familyId)
     {
         var user = await GetCurrentUserAsync(dbContext);
